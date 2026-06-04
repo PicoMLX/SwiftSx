@@ -39,7 +39,9 @@ public struct MultiSearxngBackend: SearchBackend {
 
     /// Execute a search according to the configured strategy.
     ///
-    /// - Throws: `BackendError(.network, …)` when all instances fail.
+    /// - Throws: an aggregate `BackendError` when all instances fail (preserving
+    ///   a shared error code when every instance failed the same way);
+    ///   `CancellationError` / `SxError` propagate immediately.
     public func search(_ options: SearchOptions) async throws -> [SearchResult] {
         let available = instances.filter { $0.isAvailable }
 
@@ -52,29 +54,37 @@ public struct MultiSearxngBackend: SearchBackend {
         }
     }
 
+    /// A single instance failure: its message and classified code (if any).
+    private struct Failure {
+        let message: String
+        let code: BackendErrorCode?
+    }
+
     // MARK: - Ordered strategy
 
     private func ordered(
         _ available: [SearxngBackend],
         options: SearchOptions
     ) async throws -> [SearchResult] {
-        var errors: [String] = []
+        var failures: [Failure] = []
 
         for instance in available {
+            try Task.checkCancellation()
             do {
                 return try await instance.search(options)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let sx as SxError {
+                throw sx          // sandbox refusal — propagate, don't try the rest
             } catch {
-                errors.append("\(instance.baseURL): \(errorMessage(from: error))")
+                failures.append(Failure(
+                    message: "\(instance.baseURL): \(errorMessage(from: error))",
+                    code: (error as? BackendError)?.code
+                ))
             }
         }
 
-        // All failed (or no instances were available).
-        let detail = errors.isEmpty ? "no instances configured" : errors.joined(separator: "; ")
-        throw BackendError(
-            backend: "searxng",
-            code: .network,
-            message: "all searxng instances failed: \(detail)"
-        )
+        throw aggregate(failures)
     }
 
     // MARK: - Parallel-fastest strategy
@@ -83,13 +93,7 @@ public struct MultiSearxngBackend: SearchBackend {
         _ available: [SearxngBackend],
         options: SearchOptions
     ) async throws -> [SearchResult] {
-        guard !available.isEmpty else {
-            throw BackendError(
-                backend: "searxng",
-                code: .network,
-                message: "all searxng instances failed: no instances configured"
-            )
-        }
+        guard !available.isEmpty else { throw aggregate([]) }
 
         return try await withThrowingTaskGroup(of: [SearchResult].self) { group in
             for instance in available {
@@ -98,32 +102,59 @@ public struct MultiSearxngBackend: SearchBackend {
                 }
             }
 
-            // Consume results as they finish. Unlike `for try await` (which would
-            // re-throw on the first *failure*), pulling with `group.next()` inside
-            // a do/catch lets us ignore individual failures and return the first
-            // *success* — true "fastest wins" semantics.
-            var errors: [String] = []
+            // Pull with `group.next()` (not `for try await`, which re-throws on the
+            // first *failure*) so we return the first *success* and tolerate
+            // per-instance failures. Cancellation / sandbox refusals propagate.
+            var failures: [Failure] = []
             for _ in available {
                 do {
                     guard let results = try await group.next() else { break }
                     group.cancelAll()
                     return results
+                } catch is CancellationError {
+                    group.cancelAll()
+                    throw CancellationError()
+                } catch let sx as SxError {
+                    group.cancelAll()
+                    throw sx
                 } catch {
-                    errors.append(errorMessage(from: error))
+                    failures.append(Failure(
+                        message: errorMessage(from: error),
+                        code: (error as? BackendError)?.code
+                    ))
                 }
             }
 
             group.cancelAll()
-            let detail = errors.isEmpty ? "no results" : errors.joined(separator: "; ")
-            throw BackendError(
-                backend: "searxng",
-                code: .network,
-                message: "all searxng instances failed: \(detail)"
-            )
+            throw aggregate(failures)
         }
     }
 
     // MARK: - Private helpers
+
+    /// Build the aggregate failure error. When every instance failed with the
+    /// same classified code (e.g. all `.rateLimit`), that code is preserved so
+    /// the agent still gets the actionable path; otherwise `.network`.
+    private func aggregate(_ failures: [Failure]) -> BackendError {
+        let detail = failures.isEmpty
+            ? "no instances configured"
+            : failures.map(\.message).joined(separator: "; ")
+
+        let codes = failures.compactMap(\.code)
+        let code: BackendErrorCode
+        if !failures.isEmpty, codes.count == failures.count,
+           let first = codes.first, codes.allSatisfy({ $0 == first }) {
+            code = first
+        } else {
+            code = .network
+        }
+
+        return BackendError(
+            backend: "searxng",
+            code: code,
+            message: "all searxng instances failed: \(detail)"
+        )
+    }
 
     private func errorMessage(from error: any Error) -> String {
         if let be = error as? BackendError { return be.message }

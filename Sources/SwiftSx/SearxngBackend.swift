@@ -87,6 +87,10 @@ public struct SearxngBackend: SearchBackend {
         let (data, response): (Data, HTTPResponse)
         do {
             (data, response) = try await transport.send(request, body: body)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let sx as SxError {
+            throw sx          // e.g. a sandbox refusal — propagate as-is (exit 3)
         } catch let be as BackendError {
             throw be
         } catch {
@@ -102,6 +106,10 @@ public struct SearxngBackend: SearchBackend {
         case 200...299:
             do {
                 let decoded = try JSONDecoder().decode(SearxngResponse.self, from: data)
+                // Honor the requested maximum (SearXNG may return a full page).
+                if options.numResults > 0, decoded.results.count > options.numResults {
+                    return Array(decoded.results.prefix(options.numResults))
+                }
                 return decoded.results
             } catch {
                 throw BackendError(
@@ -178,9 +186,9 @@ public struct SearxngBackend: SearchBackend {
         if !options.safeSearch.isEmpty {
             let mapped: String
             switch options.safeSearch {
-            case "none":     mapped = "0"
-            case "moderate": mapped = "1"
-            case "strict":   mapped = "2"
+            case "none", "off": mapped = "0"
+            case "moderate":    mapped = "1"
+            case "strict":      mapped = "2"
             default:         mapped = options.safeSearch
             }
             params.append(("safesearch", mapped))
@@ -215,7 +223,13 @@ public struct SearxngBackend: SearchBackend {
             bodyData = formURLEncode(params).data(using: .utf8)
         } else {
             // GET: params go in the query string.
-            var components = URLComponents(string: endpointString) ?? URLComponents()
+            guard var components = URLComponents(string: endpointString) else {
+                throw BackendError(
+                    backend: "searxng",
+                    code: .network,
+                    message: "searxng request failed: could not build endpoint URL from '\(endpointString)'"
+                )
+            }
             components.queryItems = params.map { URLQueryItem(name: $0.0, value: $0.1) }
             guard let builtURL = components.url else {
                 throw BackendError(
@@ -299,8 +313,14 @@ extension SearxngBackend {
     /// - Returns: A ``MultiSearxngBackend`` wrapping one or more ``SearxngBackend`` instances.
     public static func makeBackend(
         from config: Config,
-        transport: HTTPTransport = HTTPTransport()
+        transport: HTTPTransport? = nil
     ) -> any SearchBackend {
+        // Apply the configured request timeout unless a transport is injected
+        // (tests inject a mock-backed session). NOTE: `config.noVerifySSL` is not
+        // yet honored — skipping TLS verification needs a URLSession trust
+        // override and is tracked as a separate change.
+        let resolvedTransport = transport ?? HTTPTransport(timeout: config.timeout)
+
         // Prefer the deduped/normalised list; fall back to the single URL.
         let urls: [String] = config.searxngURLs.isEmpty
             ? (config.searxngURL.isEmpty ? [] : [config.searxngURL])
@@ -313,7 +333,7 @@ extension SearxngBackend {
                 username: config.searxngUsername,
                 password: config.searxngPassword,
                 noUserAgent: config.noUserAgent,
-                transport: transport
+                transport: resolvedTransport
             )
         }
 
