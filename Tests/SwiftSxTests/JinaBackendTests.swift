@@ -428,9 +428,9 @@ struct JinaSearchTests {
 
     @Test func keylessBackendSendsNoAuthHeader() async throws {
         let backend = makeBackend(apiKey: "", allowKeyless: true)
-        var capturedRequest: URLRequest?
+        let capturedRequest = TestLockedBox<URLRequest?>(nil)
         MockURLProtocol.handler = { request in
-            capturedRequest = request
+            capturedRequest.withLock { $0 = request }
             let response = HTTPURLResponse(
                 url: request.url!,
                 statusCode: 200,
@@ -441,7 +441,8 @@ struct JinaSearchTests {
         }
 
         _ = try await backend.search(SearchOptions(query: "test"))
-        #expect(capturedRequest?.value(forHTTPHeaderField: "Authorization") == nil)
+        let authHeader = capturedRequest.withLock { $0?.value(forHTTPHeaderField: "Authorization") }
+        #expect(authHeader == nil)
     }
 
     // MARK: Unavailable backend
