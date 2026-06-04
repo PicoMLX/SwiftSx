@@ -8,6 +8,12 @@ import Foundation
 /// stable field order so agents can pattern-match output across runs.
 public enum ResultRenderer {
 
+    // MARK: - Private: ANSI alias
+
+    /// Allows internal callers to write `ANSI.color(…)` — the type is the same
+    /// `ResultRenderer` enum where the helper is defined as a static method.
+    private typealias ANSI = ResultRenderer
+
     // MARK: - JSON
 
     /// Render results as a pretty-printed JSON envelope.
