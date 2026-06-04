@@ -100,7 +100,7 @@ public struct SearchManager: Sendable {
             }
         } else {
             failures.append(FailureRecord(
-                label: "\(primary.name): not configured",
+                label: "\(primary.name): not configured — \(Self.configurationHint(for: primary.name))",
                 isFailClosed: true
             ))
         }
@@ -110,7 +110,7 @@ public struct SearchManager: Sendable {
             guard fallback.isAvailable else {
                 // "not configured" counts as fail-closed (same as .unavailable).
                 failures.append(FailureRecord(
-                    label: "\(fallback.name): not configured",
+                    label: "\(fallback.name): not configured — \(Self.configurationHint(for: fallback.name))",
                     isFailClosed: true
                 ))
                 continue
