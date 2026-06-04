@@ -50,7 +50,9 @@ Then add it to a target:
 ```swift
 .target(
     name: "YourTarget",
-    dependencies: ["SwiftSx"]
+    dependencies: [
+        .product(name: "SwiftSx", package: "SwiftSx")
+    ]
 )
 ```
 
