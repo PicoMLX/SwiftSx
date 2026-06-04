@@ -38,7 +38,7 @@ final class TestLockedBox<T>: @unchecked Sendable {
 ///
 /// **Important**: `MockURLProtocol.handler` is process-global. Any test suite
 /// that mutates it must be annotated `@Suite(.serialized)` to prevent races.
-final class MockURLProtocol: URLProtocol, @unchecked Sendable {
+final class MockURLProtocol: URLProtocol {
     typealias Handler = @Sendable (URLRequest) throws -> (HTTPURLResponse, Data)
 
     private static let state = TestLockedBox<Handler?>(nil)
@@ -77,6 +77,37 @@ final class MockURLProtocol: URLProtocol, @unchecked Sendable {
     }
 
     override func stopLoading() {}
+
+        // MARK: - Sequential responses helper
+
+    /// Serve the given responses in order on successive requests; the last entry
+    /// repeats once the list is exhausted. Thread-safe (the index is lock-guarded),
+    /// so the `@Sendable` handler captures no mutable state.
+    ///
+    /// Each tuple supplies an HTTP `status` code and a raw `body` `Data` value.
+    /// The installed handler builds a plain `application/json` `HTTPURLResponse`
+    /// for every request, mirroring the convention used throughout the test suite.
+    static func setSequentialResponses(_ responses: [(status: Int, body: Data)]) {
+        struct State {
+            var responses: [(status: Int, body: Data)]
+            var index: Int = 0
+        }
+        let box = TestLockedBox(State(responses: responses))
+        handler = { request in
+            let (status, body) = box.withLock { state -> (Int, Data) in
+                let i = min(state.index, state.responses.count - 1)
+                state.index += 1
+                return (state.responses[i].status, state.responses[i].body)
+            }
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: status,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            return (response, body)
+        }
+    }
 
     // MARK: - Factory
 
