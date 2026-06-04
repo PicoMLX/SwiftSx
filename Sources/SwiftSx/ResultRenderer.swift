@@ -299,19 +299,24 @@ extension ResultRenderer {
     ///
     /// Appends `" ..."` when the word count is exceeded.
     static func formatSnippet(_ content: String) -> String {
-        // 1. Unescape basic HTML entities.
+        // 1. Strip HTML tags first, while the markup is still in its encoded
+        //    form. Order matters: if we unescaped entities first, a snippet like
+        //    "&lt;3 &gt;0" would decode to "<3 >0" and the tag regex below would
+        //    then eat "<3 >" as if it were a real tag, dropping legitimate text.
         var text = content
-            .replacingOccurrences(of: "&amp;",  with: "&")
-            .replacingOccurrences(of: "&lt;",   with: "<")
-            .replacingOccurrences(of: "&gt;",   with: ">")
-            .replacingOccurrences(of: "&quot;", with: "\"")
-            .replacingOccurrences(of: "&#39;",  with: "'")
-
-        // 2. Strip HTML tags.
         if let regex = try? NSRegularExpression(pattern: "<[^>]*>") {
             let range = NSRange(text.startIndex..., in: text)
             text = regex.stringByReplacingMatches(in: text, range: range, withTemplate: " ")
         }
+
+        // 2. Unescape basic HTML entities (after stripping, so decoded angle
+        //    brackets survive as literal text rather than being re-stripped).
+        text = text
+            .replacingOccurrences(of: "&lt;",   with: "<")
+            .replacingOccurrences(of: "&gt;",   with: ">")
+            .replacingOccurrences(of: "&quot;", with: "\"")
+            .replacingOccurrences(of: "&#39;",  with: "'")
+            .replacingOccurrences(of: "&amp;",  with: "&")
 
         // 3. Collapse whitespace (spaces, tabs, newlines → single space, trimmed).
         let words = text
