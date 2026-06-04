@@ -88,6 +88,10 @@ public struct SearchManager: Sendable {
             do {
                 let results = try await primary.search(options)
                 return SearchOutcome(results: results, engine: primary.name)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let sxError as SxError {
+                throw sxError   // e.g. a sandbox refusal — propagate, don't fall back
             } catch {
                 failures.append(FailureRecord(
                     label: "\(primary.name): \(reasonString(from: error))",
@@ -114,6 +118,10 @@ public struct SearchManager: Sendable {
             do {
                 let results = try await fallback.search(options)
                 return SearchOutcome(results: results, engine: fallback.name)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let sxError as SxError {
+                throw sxError
             } catch {
                 failures.append(FailureRecord(
                     label: "\(fallback.name): \(reasonString(from: error))",
@@ -157,13 +165,16 @@ public struct SearchManager: Sendable {
         guard backend.isAvailable else {
             throw SxError(
                 .auth,
-                "engine '\(engine)' is not configured — set its API key "
-                    + "(e.g. the matching *_API_KEY env var or engines_\(engine).api_key in config.toml)"
+                "engine '\(engine)' is not configured — \(Self.configurationHint(for: engine))"
             )
         }
         do {
             let results = try await backend.search(options)
             return SearchOutcome(results: results, engine: backend.name)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let sxError as SxError {
+            throw sxError   // e.g. a sandbox refusal — propagate as-is
         } catch let error as BackendError {
             // Convert to the stable exit-code contract, mirroring the fallback path.
             throw SxError(error.code.sxExitCode, error.message)
@@ -171,6 +182,19 @@ public struct SearchManager: Sendable {
     }
 
     // MARK: - Private helpers
+
+    /// A concrete, actionable hint naming the config key / env var to set for an
+    /// unconfigured engine, so fail-closed messages point to a real fix.
+    static func configurationHint(for engine: String) -> String {
+        switch engine {
+        case "searxng": return "set searxng_url (and optionally searxng_urls) in config.toml"
+        case "brave":   return "set BRAVE_API_KEY or engines_brave.api_key"
+        case "tavily":  return "set TAVILY_API_KEY or engines_tavily.api_key"
+        case "exa":     return "set EXA_API_KEY / engines_exa.api_key, or engines_exa.mcp_url"
+        case "jina":    return "set JINA_API_KEY or engines_jina.api_key (or engines_jina.allow_keyless)"
+        default:        return "configure this engine in config.toml"
+        }
+    }
 
     /// Extract a short reason string from a thrown error.
     private func reasonString(from error: any Error) -> String {
