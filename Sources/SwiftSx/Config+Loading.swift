@@ -9,15 +9,22 @@ extension Config {
     /// 1. Compute the config-file path from `XDG_CONFIG_HOME` / home directory.
     /// 2. Gate the URL through the ShellKit sandbox (`Shell.authorize`).
     /// 3. If the file does not exist, return `Config().normalized()` with env
-    ///    overrides applied (missing config is **not** an error — defaults are used,
-    ///    matching upstream `sx` behaviour).
+    ///    overrides applied. A missing file is **not** an error here — defaults
+    ///    are used (matching upstream `sx`), and the tool fails closed later, at
+    ///    search time, if the selected engine turns out not to be configured.
     /// 4. Otherwise decode the TOML, normalize, and apply env overrides.
     ///
     /// - Throws:
-    ///   - ``SxError`` with exit code `.refused` when the sandbox denies access.
-    ///   - ``SxError`` with exit code `.usage` when the TOML is malformed.
+    ///   - ``SxError`` with code `.refused` when the sandbox denies access.
+    ///   - ``SxError`` with code `.general` when the file exists but can't be read.
+    ///   - ``SxError`` with code `.usage` when the TOML is malformed.
     public static func load() async throws -> Config {
-        let env = Shell.current.environment.variables
+        // Read only the keys this layer needs (least-exposure), through the
+        // sandbox-mediated environment, rather than snapshotting every variable.
+        var env: [String: String] = [:]
+        for key in ["XDG_CONFIG_HOME", "BRAVE_API_KEY", "TAVILY_API_KEY", "EXA_API_KEY", "JINA_API_KEY"] {
+            if let value = Shell.env(key) { env[key] = value }
+        }
         let home = Shell.homeDirectory.path
 
         let path = Config.configFilePath(env: env, homeDirectory: home)
@@ -33,7 +40,13 @@ extension Config {
             return Config().normalized().applyingEnvironmentOverrides(env)
         }
 
-        let text = String(decoding: try Data(contentsOf: url), as: UTF8.self)
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            throw SxError(.general, "cannot read config file at \(path): \(error)")
+        }
+        let text = String(decoding: data, as: UTF8.self)
         return try Config.decode(fromTOML: text).normalized().applyingEnvironmentOverrides(env)
     }
 }

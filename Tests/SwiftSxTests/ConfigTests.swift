@@ -298,6 +298,40 @@ import Testing
             "https://secondary.example.com",
         ])
     }
+
+    @Test func resultCountDefaultsWhenNonPositive() {
+        for bad in [0, -1] {
+            var config = Config()
+            config.resultCount = bad
+            #expect(config.normalized().resultCount == 10)
+        }
+    }
+
+    @Test func resultCountPreservedWhenPositive() {
+        var config = Config()
+        config.resultCount = 7
+        #expect(config.normalized().resultCount == 7)
+    }
+
+    @Test func timeoutDefaultsWhenNonPositive() {
+        for bad in [0.0, -2.0] {
+            var config = Config()
+            config.timeout = bad
+            #expect(config.normalized().timeout == 30.0)
+        }
+    }
+
+    @Test func timeoutPreservedWhenPositive() {
+        var config = Config()
+        config.timeout = 12.5
+        #expect(config.normalized().timeout == 12.5)
+    }
+
+    @Test func tavilySearchDepthDefaultsWhenEmpty() {
+        var config = Config()
+        config.enginesTavily.searchDepth = ""
+        #expect(config.normalized().enginesTavily.searchDepth == "basic")
+    }
 }
 
 // MARK: - deduplicateSearxngURLs

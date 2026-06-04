@@ -1,19 +1,32 @@
+import Foundation
+
 extension Config {
     /// Returns a copy of this config with sensible defaults applied to fields
     /// that were left empty or invalid.
     ///
     /// Rules applied (in order):
     /// 1. `searxngStrategy` → `"ordered"` when empty.
-    /// 2. `enginesExa.mode` → `"auto"` when empty.
-    /// 3. `enginesExa.mcpTool` → `"exa-web-search"` when empty.
-    /// 4. `enginesExa.numResults` → `10` when `<= 0`.
-    /// 5. `enginesJina.baseURL` → `"https://s.jina.ai"` when empty.
-    /// 6. `searxngURLs` is rebuilt by deduplicating, prepending `searxngURL`.
+    /// 2. `resultCount` → `10` when `<= 0`.
+    /// 3. `timeout` → `30.0` when `<= 0`.
+    /// 4. `enginesExa.mode` → `"auto"` when empty.
+    /// 5. `enginesExa.mcpTool` → `"exa-web-search"` when empty.
+    /// 6. `enginesExa.numResults` → `10` when `<= 0`.
+    /// 7. `enginesTavily.searchDepth` → `"basic"` when empty.
+    /// 8. `enginesJina.baseURL` → `"https://s.jina.ai"` when empty.
+    /// 9. `searxngURLs` is rebuilt by deduplicating, prepending `searxngURL`.
     public func normalized() -> Config {
         var copy = self
 
         if copy.searxngStrategy.isEmpty {
             copy.searxngStrategy = "ordered"
+        }
+
+        // Clamp query knobs that would otherwise make queries fail or hang.
+        if copy.resultCount <= 0 {
+            copy.resultCount = 10
+        }
+        if copy.timeout <= 0 {
+            copy.timeout = 30.0
         }
 
         if copy.enginesExa.mode.isEmpty {
@@ -24,6 +37,10 @@ extension Config {
         }
         if copy.enginesExa.numResults <= 0 {
             copy.enginesExa.numResults = 10
+        }
+
+        if copy.enginesTavily.searchDepth.isEmpty {
+            copy.enginesTavily.searchDepth = "basic"
         }
 
         if copy.enginesJina.baseURL.isEmpty {
