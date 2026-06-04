@@ -24,10 +24,15 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.3.0"),
         // Virtualised shell environment: sandboxed filesystem, env vars, stdio.
         .package(url: "https://github.com/Cocoanetics/ShellKit", branch: "main"),
+        .package(url: "https://github.com/dduan/TOMLDecoder", from: "0.3.0"),
     ],
     targets: [
         .target(
-            name: "SwiftSx"
+            name: "SwiftSx",
+            dependencies: [
+                .product(name: "ShellKit", package: "ShellKit"),
+                .product(name: "TOMLDecoder", package: "TOMLDecoder"),
+            ]
         ),
         .target(
             name: "SxCommand",
