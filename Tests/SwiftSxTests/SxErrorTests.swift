@@ -15,9 +15,9 @@ import Testing
 
 @Suite struct SxErrorTests {
     @Test func carriesCodeAndMessage() {
-        let error = SxError(.usage, "sx: --num must be between 1 and 100")
+        let error = SxError(.usage, "--num must be between 1 and 100")
         #expect(error.exitCode == .usage)
-        #expect(error.message == "sx: --num must be between 1 and 100")
+        #expect(error.message == "--num must be between 1 and 100")
         #expect(error.description == "sx: --num must be between 1 and 100")
     }
 }

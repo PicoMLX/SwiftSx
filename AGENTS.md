@@ -18,7 +18,8 @@ A single library + binary port, flat (this repo hosts one tool):
 ```
 Sources/
   SwiftSx/        SDK library  — models, config, backends, manager, rendering.
-                  No ArgumentParser. Depends on ShellKit + swift-http-types.
+                  No ArgumentParser. Uses ShellKit (sandbox/env) and, once the
+                  backends land, swift-http-types.
   SxCommand/      Command library — the `sx` AsyncParsableCommand tree.
                   Depends on SwiftSx + ShellKit + ArgumentParser.
   sx/             Executable — a ~4-line @main wrapper over SxCommand.
@@ -30,6 +31,11 @@ Tests/
 Dependency chain is one-way: `sx` (exec) → `SxCommand` → `SwiftSx` → `ShellKit`.
 The SDK library has **zero** ArgumentParser dependency so other packages
 (SwiftBash) can import `SxCommand` and register the tool as a builtin.
+
+Third-party dependencies are introduced in the PR that first needs them, so
+each stacked PR stays small: `ShellKit` + `swift-argument-parser` arrive with
+the command skeleton, the TOML parser with config loading, and
+`swift-http-types` with the search backends.
 
 ## The file sandbox (ShellKit)
 
