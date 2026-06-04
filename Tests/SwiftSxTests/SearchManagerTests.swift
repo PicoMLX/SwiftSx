@@ -297,8 +297,9 @@ private struct MockBackend: SearchBackend {
         } catch let e as SxError {
             #expect(e.exitCode == .auth)
             #expect(e.message.contains("beta"))
-            // Message should hint at how to configure it.
-            #expect(e.message.contains("api_key") || e.message.contains("API_KEY"))
+            // Message should hint at how to configure it (per-engine hint; an
+            // unknown engine like "beta" falls back to the generic config.toml hint).
+            #expect(e.message.contains("config.toml"))
         }
     }
 
