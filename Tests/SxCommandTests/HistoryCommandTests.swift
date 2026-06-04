@@ -41,7 +41,9 @@ import SwiftSx
     }
 
     @Test func historyNegativeLimitFailsValidation() throws {
-        var command = try HistoryCommand.parse(["-n", "-5"])
+        // Use --limit=VALUE: "-n -5" is misparsed (ArgumentParser treats -5 as
+        // an option). The negative value is what validate() should reject.
+        var command = try HistoryCommand.parse(["--limit=-5"])
         #expect(throws: (any Error).self) {
             try command.validate()
         }

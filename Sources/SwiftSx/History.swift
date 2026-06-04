@@ -77,6 +77,7 @@ extension History {
     private static var displayFormatter: DateFormatter {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(identifier: "UTC")   // deterministic across runners
         f.dateFormat = "yyyy-MM-dd HH:mm"
         return f
     }
