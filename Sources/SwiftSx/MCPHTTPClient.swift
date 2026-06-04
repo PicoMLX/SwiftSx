@@ -85,13 +85,6 @@ private struct MCPRequest<P: Encodable>: Encodable {
 }
 
 // MARK: - JSON-RPC response envelope
-//
-// The response may carry either `result` (success) or `error` (failure).
-// Because `result` can be any JSON shape, it is decoded as a raw
-// `Data`-backed sub-decoder by reading the whole response as a dict and
-// isolating the `result` subtree with JSONSerialization.  The alternative
-// (a generic associated type) would require propagating type parameters all
-// the way up; the JSONSerialization approach is simpler and equally correct.
 
 /// The error object embedded in a JSON-RPC failure response.
 private struct MCPErrorObject: Decodable {
@@ -99,10 +92,13 @@ private struct MCPErrorObject: Decodable {
     let message: String?
 }
 
-/// Top-level JSON-RPC 2.0 response, used to detect error vs. result presence.
-private struct MCPResponseEnvelope: Decodable {
+/// Top-level JSON-RPC 2.0 response envelope.
+///
+/// The `result` field is decoded directly into the concrete type `R` that the
+/// caller specifies, eliminating any intermediate JSONSerialization round-trip.
+private struct MCPResponse<R: Decodable>: Decodable {
     let error: MCPErrorObject?
-    // `result` is decoded separately via JSONSerialization — see MCPHTTPClient.call.
+    let result: R?
 }
 
 // MARK: - MCPHTTPClient
@@ -139,32 +135,37 @@ struct MCPHTTPClient: Sendable {
             clientInfo: MCPInitializeParams.ClientInfo(name: "sx", version: "2.2.0")
         )
         let envelope = MCPRequest(id: 1, method: "initialize", params: params)
-        _ = try? await postJSON(envelope, id: 1)
+        _ = try? await postJSON(envelope, responseType: EmptyResult.self)
     }
 
-    /// POST a `tools/call` JSON-RPC request and return the raw response bytes
-    /// for the `result` subtree.
+    /// POST a `tools/call` JSON-RPC request and decode the `result` into `R`.
     ///
     /// - Parameters:
     ///   - toolName: The MCP tool name to invoke.
     ///   - arguments: The tool arguments to forward.
-    /// - Returns: Raw JSON bytes representing the `result` value.
+    ///   - responseType: The concrete `Decodable` type to decode the `result` into.
+    /// - Returns: The decoded `result` value.
     /// - Throws: `BackendError` on network failure, non-2xx status, or a
     ///   JSON-RPC `error` object in the response.
-    func callTool(name toolName: String, arguments: MCPToolCallArguments) async throws -> Data {
+    func callTool<R: Decodable>(name toolName: String, arguments: MCPToolCallArguments, responseType: R.Type) async throws -> R {
         let params = MCPToolCallParams(name: toolName, arguments: arguments)
         let envelope = MCPRequest(id: 2, method: "tools/call", params: params)
-        return try await postJSON(envelope, id: 2)
+        return try await postJSON(envelope, responseType: responseType)
     }
 
     // MARK: - Private
 
-    /// Encode `request` as JSON, POST it to `urlString`, and return the raw bytes
-    /// of the `result` field from the JSON-RPC response.
+    /// Placeholder used by `initialize()` when the response body is irrelevant.
+    private struct EmptyResult: Decodable {}
+
+    /// Encode `request` as JSON, POST it to `urlString`, decode the JSON-RPC
+    /// `result` field directly into `R`, and return it.
     ///
-    /// - Throws: `BackendError(.network, …)` for transport errors or bad URLs.
-    /// - Throws: `BackendError(.invalidResponse, …)` if the envelope cannot be parsed.
-    private func postJSON<P: Encodable>(_ request: MCPRequest<P>, id _: Int) async throws -> Data {
+    /// - Throws: `BackendError(.network, …)` for transport errors, bad URLs, or
+    ///   a JSON-RPC `error` object in the response.
+    /// - Throws: `BackendError(.invalidResponse, …)` if the envelope cannot be
+    ///   parsed or the `result` field is absent.
+    private func postJSON<P: Encodable, R: Decodable>(_ request: MCPRequest<P>, responseType: R.Type) async throws -> R {
         guard let url = URL(string: urlString) else {
             throw BackendError(
                 backend: "exa-mcp",
@@ -214,9 +215,16 @@ struct MCPHTTPClient: Sendable {
             )
         }
 
-        // Decode the top-level envelope to check for a JSON-RPC error object.
-        if let envelope = try? JSONDecoder().decode(MCPResponseEnvelope.self, from: data),
-           let rpcError = envelope.error {
+        // Decode the envelope; this also checks for a JSON-RPC error object.
+        guard let envelope = try? JSONDecoder().decode(MCPResponse<R>.self, from: data) else {
+            throw BackendError(
+                backend: "exa-mcp",
+                code: .invalidResponse,
+                message: "exa MCP returned a response that could not be parsed"
+            )
+        }
+
+        if let rpcError = envelope.error {
             let msg = rpcError.message ?? "unknown MCP error"
             throw BackendError(
                 backend: "exa-mcp",
@@ -225,12 +233,7 @@ struct MCPHTTPClient: Sendable {
             )
         }
 
-        // Extract the raw `result` subtree using JSONSerialization so the caller
-        // can decode it against its own concrete struct.
-        guard
-            let topLevel = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let resultValue = topLevel["result"]
-        else {
+        guard let result = envelope.result else {
             throw BackendError(
                 backend: "exa-mcp",
                 code: .invalidResponse,
@@ -238,14 +241,6 @@ struct MCPHTTPClient: Sendable {
             )
         }
 
-        do {
-            return try JSONSerialization.data(withJSONObject: resultValue)
-        } catch {
-            throw BackendError(
-                backend: "exa-mcp",
-                code: .invalidResponse,
-                message: "exa MCP result could not be re-serialized: \(error)"
-            )
-        }
+        return result
     }
 }

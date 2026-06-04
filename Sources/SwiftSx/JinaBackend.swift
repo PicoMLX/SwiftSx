@@ -8,6 +8,10 @@ import FoundationNetworking
 // MARK: - JinaRequest (private wire type)
 
 /// The JSON body sent to the Jina AI search endpoint.
+///
+/// All property names match the API keys exactly, so Swift's synthesized
+/// `Encodable` implementation is used. Optional fields are omitted when `nil`
+/// because the synthesized encoder calls `encodeIfPresent` for optionals.
 private struct JinaRequest: Encodable {
     let q: String
     /// BCP 47 language tag (e.g. `"en"`); omitted when empty.
@@ -16,18 +20,6 @@ private struct JinaRequest: Encodable {
     let gl: String?
     /// Optional location string; reserved for future use.
     let location: String?
-
-    func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(q, forKey: .q)
-        try c.encodeIfPresent(hl,       forKey: .hl)
-        try c.encodeIfPresent(gl,       forKey: .gl)
-        try c.encodeIfPresent(location, forKey: .location)
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case q, hl, gl, location
-    }
 }
 
 // MARK: - JinaResponse (private wire type)
@@ -129,7 +121,7 @@ public struct JinaBackend: SearchBackend {
                     if let desc = item.description, !desc.isEmpty {
                         resolvedContent = desc
                     } else if let raw = item.content {
-                        resolvedContent = raw.count > 500 ? String(raw.prefix(500)) : raw
+                        resolvedContent = String(raw.prefix(500))
                     } else {
                         resolvedContent = ""
                     }

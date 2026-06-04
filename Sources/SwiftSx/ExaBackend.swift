@@ -322,9 +322,9 @@ public struct ExaBackend: SearchBackend {
         }
 
         let args = MCPToolCallArguments(query: options.query, numResults: n)
-        let resultData: Data
+        let toolResult: ExaMCPToolResult
         do {
-            resultData = try await client.callTool(name: mcpTool, arguments: args)
+            toolResult = try await client.callTool(name: mcpTool, arguments: args, responseType: ExaMCPToolResult.self)
         } catch is CancellationError {
             throw CancellationError()
         } catch let sx as SxError {
@@ -340,7 +340,7 @@ public struct ExaBackend: SearchBackend {
         }
 
         // Parse the tool result — try structuredContent first, then markdown links.
-        let results = parseMCPResult(resultData)
+        let results = parseMCPResult(toolResult)
 
         if options.numResults > 0, results.count > options.numResults {
             return Array(results.prefix(options.numResults))
@@ -350,17 +350,15 @@ public struct ExaBackend: SearchBackend {
 
     // MARK: - MCP result parsing
 
-    /// Parse the raw `result` bytes from a `tools/call` response into
-    /// ``SearchResult`` values.
+    /// Parse a decoded `ExaMCPToolResult` into ``SearchResult`` values.
     ///
     /// Two strategies are tried in order:
     /// 1. `structuredContent.results[]` — preferred when present; each item's
     ///    content is the first non-empty of `text`, `content`, `summary`, `snippet`.
     /// 2. `content[]` items of `type == "text"` — scan the concatenated text for
     ///    Markdown links `[title](url)` via `NSRegularExpression`.
-    private func parseMCPResult(_ data: Data) -> [SearchResult] {
-        if let toolResult = try? JSONDecoder().decode(ExaMCPToolResult.self, from: data),
-           let structured = toolResult.structuredContent,
+    private func parseMCPResult(_ toolResult: ExaMCPToolResult) -> [SearchResult] {
+        if let structured = toolResult.structuredContent,
            let items = structured.results,
            !items.isEmpty {
             return items.map { item in
@@ -376,8 +374,7 @@ public struct ExaBackend: SearchBackend {
         }
 
         // Fall back: scan content[] text items for Markdown links.
-        if let toolResult = try? JSONDecoder().decode(ExaMCPToolResult.self, from: data),
-           let contentItems = toolResult.content {
+        if let contentItems = toolResult.content {
             let combinedText = contentItems
                 .filter { $0.type == "text" }
                 .compactMap { $0.text }
