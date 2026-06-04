@@ -73,6 +73,10 @@ public struct BraveBackend: SearchBackend {
         let (data, response): (Data, HTTPResponse)
         do {
             (data, response) = try await transport.send(request, body: nil)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let sx as SxError {
+            throw sx          // e.g. a sandbox refusal — propagate as-is (exit 3)
         } catch let be as BackendError {
             throw be
         } catch {
@@ -211,11 +215,11 @@ extension BraveBackend {
     /// - Returns: A ``BraveBackend`` configured from `config.enginesBrave`.
     public static func makeBrave(
         from config: Config,
-        transport: HTTPTransport = HTTPTransport()
+        transport: HTTPTransport? = nil
     ) -> BraveBackend {
         BraveBackend(
             apiKey:    config.enginesBrave.apiKey,
-            transport: transport
+            transport: transport ?? HTTPTransport(timeout: config.timeout)
         )
     }
 }

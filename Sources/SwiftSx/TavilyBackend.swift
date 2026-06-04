@@ -110,6 +110,10 @@ public struct TavilyBackend: SearchBackend {
         let (data, response): (Data, HTTPResponse)
         do {
             (data, response) = try await transport.send(request, body: bodyData)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let sx as SxError {
+            throw sx          // e.g. a sandbox refusal — propagate as-is (exit 3)
         } catch let be as BackendError {
             throw be
         } catch {
@@ -240,14 +244,14 @@ extension TavilyBackend {
     /// - Returns: A ``TavilyBackend`` configured from `config.enginesTavily`.
     public static func makeTavily(
         from config: Config,
-        transport: HTTPTransport = HTTPTransport()
+        transport: HTTPTransport? = nil
     ) -> TavilyBackend {
         TavilyBackend(
             apiKey:            config.enginesTavily.apiKey,
             searchDepth:       config.enginesTavily.searchDepth,
             includeRawContent: config.enginesTavily.includeRawContent,
             includeAnswer:     config.enginesTavily.includeAnswer,
-            transport:         transport
+            transport:         transport ?? HTTPTransport(timeout: config.timeout)
         )
     }
 }
