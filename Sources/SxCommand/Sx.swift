@@ -17,7 +17,8 @@ public struct Sx: AsyncParsableCommand {
         Output is built for programmatic use: machine data on stdout, \
         diagnostics on stderr, stable exit codes, and a --json mode.
         """,
-        version: SxVersion.current
+        version: SxVersion.current,
+        subcommands: [HistoryCommand.self]
     )
 
     @Argument(help: "The search query (one or more terms).")
