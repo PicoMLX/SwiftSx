@@ -25,6 +25,7 @@ let package = Package(
         // Virtualised shell environment: sandboxed filesystem, env vars, stdio.
         .package(url: "https://github.com/Cocoanetics/ShellKit", branch: "main"),
         .package(url: "https://github.com/dduan/TOMLDecoder", from: "0.3.0"),
+        .package(url: "https://github.com/apple/swift-http-types", from: "1.3.0"),
     ],
     targets: [
         .target(
@@ -32,6 +33,8 @@ let package = Package(
             dependencies: [
                 .product(name: "ShellKit", package: "ShellKit"),
                 .product(name: "TOMLDecoder", package: "TOMLDecoder"),
+                .product(name: "HTTPTypes", package: "swift-http-types"),
+                .product(name: "HTTPTypesFoundation", package: "swift-http-types"),
             ]
         ),
         .target(
