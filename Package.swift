@@ -5,22 +5,49 @@ import PackageDescription
 
 let package = Package(
     name: "SwiftSx",
+    platforms: [
+        .macOS(.v13),
+        .iOS(.v16),
+        .tvOS(.v16),
+        .watchOS(.v9),
+    ],
     products: [
-        // Products define the executables and libraries a package produces, making them visible to other packages.
-        .library(
-            name: "SwiftSx",
-            targets: ["SwiftSx"]
-        ),
+        // The search SDK: models, config, backends, manager, rendering.
+        // Zero ArgumentParser dependency so embedders (e.g. SwiftBash) can use it.
+        .library(name: "SwiftSx", targets: ["SwiftSx"]),
+        // The `sx` command tree, for embedders that register it as a builtin.
+        .library(name: "SxCommand", targets: ["SxCommand"]),
+        // The `sx` executable.
+        .executable(name: "sx", targets: ["sx"]),
+    ],
+    dependencies: [
+        .package(url: "https://github.com/apple/swift-argument-parser", from: "1.3.0"),
+        // Virtualised shell environment: sandboxed filesystem, env vars, stdio.
+        .package(url: "https://github.com/Cocoanetics/ShellKit", branch: "main"),
     ],
     targets: [
-        // Targets are the basic building blocks of a package, defining a module or a test suite.
-        // Targets can depend on other targets in this package and products from dependencies.
         .target(
             name: "SwiftSx"
+        ),
+        .target(
+            name: "SxCommand",
+            dependencies: [
+                "SwiftSx",
+                .product(name: "ShellKit", package: "ShellKit"),
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            ]
+        ),
+        .executableTarget(
+            name: "sx",
+            dependencies: ["SxCommand"]
         ),
         .testTarget(
             name: "SwiftSxTests",
             dependencies: ["SwiftSx"]
+        ),
+        .testTarget(
+            name: "SxCommandTests",
+            dependencies: ["SxCommand", "SwiftSx"]
         ),
     ],
     swiftLanguageModes: [.v6]
