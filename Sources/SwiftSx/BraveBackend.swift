@@ -157,12 +157,14 @@ public struct BraveBackend: SearchBackend {
             count = rawCount
         }
 
-        // safesearch — map the three documented levels.
+        // safesearch — map the documented levels.
+        // Both "none" and "off" map to Brave's "off"; "strict" → "strict";
+        // everything else (including "moderate") → "moderate".
         let safeSearch: String
         switch options.safeSearch {
-        case "none":   safeSearch = "off"
-        case "strict": safeSearch = "strict"
-        default:       safeSearch = "moderate"
+        case "none", "off": safeSearch = "off"
+        case "strict":      safeSearch = "strict"
+        default:            safeSearch = "moderate"
         }
 
         // Build query items.
@@ -172,10 +174,33 @@ public struct BraveBackend: SearchBackend {
             URLQueryItem(name: "safesearch", value: safeSearch),
         ]
 
-        // offset — only when pageNo > 1.
+        // offset — zero-based page index (max 9); only when pageNo > 1.
+        // Brave's offset is a page index, not a result offset, so offset = pageNo - 1.
         if options.pageNo > 1 {
-            let offset = (options.pageNo - 1) * count
+            let offset = options.pageNo - 1
             queryItems.append(URLQueryItem(name: "offset", value: String(offset)))
+        }
+
+        // search_lang — when options.language is non-empty.
+        if !options.language.isEmpty {
+            queryItems.append(URLQueryItem(name: "search_lang", value: options.language))
+        }
+
+        // freshness — map options.timeRange to Brave's freshness values.
+        // Accepted short forms: d/day→pd, w/week→pw, m/month→pm, y/year→py.
+        // Unknown values are omitted (do not send a bad value).
+        if !options.timeRange.isEmpty {
+            let freshness: String?
+            switch options.timeRange {
+            case "d", "day":   freshness = "pd"
+            case "w", "week":  freshness = "pw"
+            case "m", "month": freshness = "pm"
+            case "y", "year":  freshness = "py"
+            default:           freshness = nil
+            }
+            if let freshness {
+                queryItems.append(URLQueryItem(name: "freshness", value: freshness))
+            }
         }
 
         var components = URLComponents(string: "https://api.search.brave.com/res/v1/web/search")

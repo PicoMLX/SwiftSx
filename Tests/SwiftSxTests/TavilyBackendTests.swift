@@ -81,18 +81,31 @@ private func tavilyItem(
         #expect(dict["query"] as? String == "swift concurrency")
     }
 
-    @Test func bodySitePrefixAddedWhenNonEmpty() throws {
+    @Test func bodySiteUsesIncludeDomainsWhenNonEmpty() throws {
         let options = SearchOptions(query: "swift", site: "github.com")
         let (_, body) = try backend.makeRequest(options)
         let dict = decodeTavilyBody(body)
-        #expect(dict["query"] as? String == "site:github.com swift")
+        // query must NOT have a "site:" prefix — domain filtering via include_domains
+        #expect(dict["query"] as? String == "swift")
+        // include_domains must be ["github.com"]
+        let domains = dict["include_domains"] as? [String]
+        #expect(domains == ["github.com"])
     }
 
-    @Test func bodySitePrefixOmittedWhenEmpty() throws {
+    @Test func bodySiteQueryHasNoSitePrefixWhenSiteSet() throws {
+        let options = SearchOptions(query: "repos", site: "github.com")
+        let (_, body) = try backend.makeRequest(options)
+        let dict = decodeTavilyBody(body)
+        let q = dict["query"] as? String ?? ""
+        #expect(!q.hasPrefix("site:"))
+    }
+
+    @Test func bodyIncludeDomainsAbsentWhenSiteEmpty() throws {
         let options = SearchOptions(query: "swift", site: "")
         let (_, body) = try backend.makeRequest(options)
         let dict = decodeTavilyBody(body)
         #expect(dict["query"] as? String == "swift")
+        #expect(dict["include_domains"] == nil)
     }
 
     @Test func bodyMaxResultsDefaultsTenWhenZero() throws {
@@ -163,6 +176,115 @@ private func tavilyItem(
         let (_, body) = try b.makeRequest(SearchOptions(query: "test"))
         let dict = decodeTavilyBody(body)
         #expect(dict["include_answer"] as? Bool == true)
+    }
+
+    // MARK: time_range
+
+    @Test func bodyTimeRangePresentWhenSet() throws {
+        let options = SearchOptions(query: "test", timeRange: "day")
+        let (_, body) = try backend.makeRequest(options)
+        let dict = decodeTavilyBody(body)
+        #expect(dict["time_range"] as? String == "day")
+    }
+
+    @Test func bodyTimeRangeWeekPassedThrough() throws {
+        let options = SearchOptions(query: "test", timeRange: "week")
+        let (_, body) = try backend.makeRequest(options)
+        let dict = decodeTavilyBody(body)
+        #expect(dict["time_range"] as? String == "week")
+    }
+
+    @Test func bodyTimeRangeMonthPassedThrough() throws {
+        let options = SearchOptions(query: "test", timeRange: "month")
+        let (_, body) = try backend.makeRequest(options)
+        let dict = decodeTavilyBody(body)
+        #expect(dict["time_range"] as? String == "month")
+    }
+
+    @Test func bodyTimeRangeYearPassedThrough() throws {
+        let options = SearchOptions(query: "test", timeRange: "year")
+        let (_, body) = try backend.makeRequest(options)
+        let dict = decodeTavilyBody(body)
+        #expect(dict["time_range"] as? String == "year")
+    }
+
+    @Test func bodyTimeRangeShortDExpandsToDay() throws {
+        let options = SearchOptions(query: "test", timeRange: "d")
+        let (_, body) = try backend.makeRequest(options)
+        let dict = decodeTavilyBody(body)
+        #expect(dict["time_range"] as? String == "day")
+    }
+
+    @Test func bodyTimeRangeShortWExpandsToWeek() throws {
+        let options = SearchOptions(query: "test", timeRange: "w")
+        let (_, body) = try backend.makeRequest(options)
+        let dict = decodeTavilyBody(body)
+        #expect(dict["time_range"] as? String == "week")
+    }
+
+    @Test func bodyTimeRangeShortMExpandsToMonth() throws {
+        let options = SearchOptions(query: "test", timeRange: "m")
+        let (_, body) = try backend.makeRequest(options)
+        let dict = decodeTavilyBody(body)
+        #expect(dict["time_range"] as? String == "month")
+    }
+
+    @Test func bodyTimeRangeShortYExpandsToYear() throws {
+        let options = SearchOptions(query: "test", timeRange: "y")
+        let (_, body) = try backend.makeRequest(options)
+        let dict = decodeTavilyBody(body)
+        #expect(dict["time_range"] as? String == "year")
+    }
+
+    @Test func bodyTimeRangeAbsentWhenEmpty() throws {
+        let options = SearchOptions(query: "test", timeRange: "")
+        let (_, body) = try backend.makeRequest(options)
+        let dict = decodeTavilyBody(body)
+        #expect(dict["time_range"] == nil)
+    }
+
+    // MARK: topic (categories → topic)
+
+    @Test func bodyTopicIsNewsWhenCategoriesContainsNews() throws {
+        let options = SearchOptions(query: "test", categories: ["news"])
+        let (_, body) = try backend.makeRequest(options)
+        let dict = decodeTavilyBody(body)
+        #expect(dict["topic"] as? String == "news")
+    }
+
+    @Test func bodyTopicIsFinanceWhenCategoriesContainsFinance() throws {
+        let options = SearchOptions(query: "test", categories: ["finance"])
+        let (_, body) = try backend.makeRequest(options)
+        let dict = decodeTavilyBody(body)
+        #expect(dict["topic"] as? String == "finance")
+    }
+
+    @Test func bodyTopicNewsPreferredOverFinance() throws {
+        let options = SearchOptions(query: "test", categories: ["news", "finance"])
+        let (_, body) = try backend.makeRequest(options)
+        let dict = decodeTavilyBody(body)
+        #expect(dict["topic"] as? String == "news")
+    }
+
+    @Test func bodyTopicAbsentWhenCategoriesEmpty() throws {
+        let options = SearchOptions(query: "test", categories: [])
+        let (_, body) = try backend.makeRequest(options)
+        let dict = decodeTavilyBody(body)
+        #expect(dict["topic"] == nil)
+    }
+
+    @Test func bodyTopicAbsentWhenCategoriesContainsGeneral() throws {
+        let options = SearchOptions(query: "test", categories: ["general"])
+        let (_, body) = try backend.makeRequest(options)
+        let dict = decodeTavilyBody(body)
+        #expect(dict["topic"] == nil)
+    }
+
+    @Test func bodyTopicAbsentWhenCategoriesContainsOther() throws {
+        let options = SearchOptions(query: "test", categories: ["science", "technology"])
+        let (_, body) = try backend.makeRequest(options)
+        let dict = decodeTavilyBody(body)
+        #expect(dict["topic"] == nil)
     }
 }
 

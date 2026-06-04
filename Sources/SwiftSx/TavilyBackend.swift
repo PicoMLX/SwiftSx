@@ -14,13 +14,34 @@ private struct TavilyRequest: Encodable {
     let maxResults: Int
     let includeRawContent: Bool
     let includeAnswer: Bool
+    /// Optional domain filter; when non-nil, sent as `include_domains` JSON array.
+    let includeDomains: [String]?
+    /// Optional time range filter (`day`, `week`, `month`, `year`).
+    let timeRange: String?
+    /// Optional topic / category filter (`news`, `finance`; omit for `general`).
+    let topic: String?
 
     enum CodingKeys: String, CodingKey {
-        case query            = "query"
-        case searchDepth      = "search_depth"
-        case maxResults       = "max_results"
+        case query             = "query"
+        case searchDepth       = "search_depth"
+        case maxResults        = "max_results"
         case includeRawContent = "include_raw_content"
-        case includeAnswer    = "include_answer"
+        case includeAnswer     = "include_answer"
+        case includeDomains    = "include_domains"
+        case timeRange         = "time_range"
+        case topic             = "topic"
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(query,             forKey: .query)
+        try container.encode(searchDepth,       forKey: .searchDepth)
+        try container.encode(maxResults,        forKey: .maxResults)
+        try container.encode(includeRawContent, forKey: .includeRawContent)
+        try container.encode(includeAnswer,     forKey: .includeAnswer)
+        try container.encodeIfPresent(includeDomains, forKey: .includeDomains)
+        try container.encodeIfPresent(timeRange,      forKey: .timeRange)
+        try container.encodeIfPresent(topic,          forKey: .topic)
     }
 }
 
@@ -190,13 +211,11 @@ public struct TavilyBackend: SearchBackend {
             )
         }
 
-        // q — prefix site: when options.site is non-empty.
-        let queryString: String
-        if options.site.isEmpty {
-            queryString = options.query
-        } else {
-            queryString = "site:\(options.site) \(options.query)"
-        }
+        // query — plain query; site filtering is done via include_domains, not query prefix.
+        let queryString = options.query
+
+        // include_domains — when options.site is non-empty, restrict to that domain.
+        let includeDomains: [String]? = options.site.isEmpty ? nil : [options.site]
 
         // max_results — clamp to 1...20; default to 10 when ≤ 0 (matches Brave).
         let maxResults: Int
@@ -208,12 +227,40 @@ public struct TavilyBackend: SearchBackend {
             maxResults = options.numResults
         }
 
+        // time_range — expand short forms to Tavily's accepted values.
+        let timeRange: String?
+        if options.timeRange.isEmpty {
+            timeRange = nil
+        } else {
+            switch options.timeRange {
+            case "d":           timeRange = "day"
+            case "w":           timeRange = "week"
+            case "m":           timeRange = "month"
+            case "y":           timeRange = "year"
+            default:            timeRange = options.timeRange
+            }
+        }
+
+        // topic — map categories to Tavily's topic field.
+        // "news" and "finance" are the two non-default topics; omit for "general".
+        let topic: String?
+        if options.categories.contains("news") {
+            topic = "news"
+        } else if options.categories.contains("finance") {
+            topic = "finance"
+        } else {
+            topic = nil
+        }
+
         let requestBody = TavilyRequest(
             query:             queryString,
             searchDepth:       searchDepth,
             maxResults:        maxResults,
             includeRawContent: includeRawContent,
-            includeAnswer:     includeAnswer
+            includeAnswer:     includeAnswer,
+            includeDomains:    includeDomains,
+            timeRange:         timeRange,
+            topic:             topic
         )
 
         let bodyData: Data

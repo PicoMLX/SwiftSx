@@ -110,27 +110,34 @@ private func braveJSON(results: [[String: String]] = []) -> Data {
     }
 
     @Test func offsetCalculatedWhenPageNoGreaterThanOne() throws {
-        // pageNo=2, count=10 → offset=10
+        // pageNo=2 → offset=1 (zero-based page index, not result offset)
         let options = SearchOptions(query: "test", numResults: 10, pageNo: 2)
         let req = try backend.makeRequest(options)
         let params = parseBraveQuery(req.url?.absoluteString ?? "")
-        #expect(params["offset"] == "10")
+        #expect(params["offset"] == "1")
     }
 
-    @Test func offsetUsesClampedCount() throws {
-        // pageNo=3, numResults=0→count=10 → offset=20
+    @Test func offsetPageThreeIsTwo() throws {
+        // pageNo=3 → offset=2 (independent of count)
         let options = SearchOptions(query: "test", numResults: 0, pageNo: 3)
         let req = try backend.makeRequest(options)
         let params = parseBraveQuery(req.url?.absoluteString ?? "")
-        #expect(params["offset"] == "20")
+        #expect(params["offset"] == "2")
     }
 
-    @Test func offsetPageThreeWithFiveResults() throws {
-        // pageNo=3, numResults=5 → offset=10
-        let options = SearchOptions(query: "test", numResults: 5, pageNo: 3)
+    @Test func offsetPageFourIsThree() throws {
+        // pageNo=4 → offset=3 (count does not affect offset)
+        let options = SearchOptions(query: "test", numResults: 5, pageNo: 4)
         let req = try backend.makeRequest(options)
         let params = parseBraveQuery(req.url?.absoluteString ?? "")
-        #expect(params["offset"] == "10")
+        #expect(params["offset"] == "3")
+    }
+
+    @Test func safesearchOffMapsToOff() throws {
+        let options = SearchOptions(query: "test", safeSearch: "off")
+        let req = try backend.makeRequest(options)
+        let params = parseBraveQuery(req.url?.absoluteString ?? "")
+        #expect(params["safesearch"] == "off")
     }
 
     @Test func safesearchNoneMapsToOff() throws {
@@ -160,6 +167,103 @@ private func braveJSON(results: [[String: String]] = []) -> Data {
         let params = parseBraveQuery(req.url?.absoluteString ?? "")
         #expect(params["safesearch"] == "moderate")
     }
+
+    // MARK: search_lang
+
+    @Test func searchLangPresentWhenLanguageSet() throws {
+        let options = SearchOptions(query: "test", language: "en-US")
+        let req = try backend.makeRequest(options)
+        let params = parseBraveQuery(req.url?.absoluteString ?? "")
+        #expect(params["search_lang"] == "en-US")
+    }
+
+    @Test func searchLangAbsentWhenLanguageEmpty() throws {
+        let options = SearchOptions(query: "test", language: "")
+        let req = try backend.makeRequest(options)
+        let params = parseBraveQuery(req.url?.absoluteString ?? "")
+        #expect(params["search_lang"] == nil)
+    }
+
+    @Test func searchLangPassesThroughLocaleCode() throws {
+        let options = SearchOptions(query: "test", language: "de-DE")
+        let req = try backend.makeRequest(options)
+        let params = parseBraveQuery(req.url?.absoluteString ?? "")
+        #expect(params["search_lang"] == "de-DE")
+    }
+
+    // MARK: freshness (time_range → freshness)
+
+    @Test func freshnessDayMapsToProductDay() throws {
+        let options = SearchOptions(query: "test", timeRange: "day")
+        let req = try backend.makeRequest(options)
+        let params = parseBraveQuery(req.url?.absoluteString ?? "")
+        #expect(params["freshness"] == "pd")
+    }
+
+    @Test func freshnessWeekMapsToProductWeek() throws {
+        let options = SearchOptions(query: "test", timeRange: "week")
+        let req = try backend.makeRequest(options)
+        let params = parseBraveQuery(req.url?.absoluteString ?? "")
+        #expect(params["freshness"] == "pw")
+    }
+
+    @Test func freshnessMonthMapsToProductMonth() throws {
+        let options = SearchOptions(query: "test", timeRange: "month")
+        let req = try backend.makeRequest(options)
+        let params = parseBraveQuery(req.url?.absoluteString ?? "")
+        #expect(params["freshness"] == "pm")
+    }
+
+    @Test func freshnessYearMapsToProductYear() throws {
+        let options = SearchOptions(query: "test", timeRange: "year")
+        let req = try backend.makeRequest(options)
+        let params = parseBraveQuery(req.url?.absoluteString ?? "")
+        #expect(params["freshness"] == "py")
+    }
+
+    @Test func freshnessShortFormDMapsToProductDay() throws {
+        let options = SearchOptions(query: "test", timeRange: "d")
+        let req = try backend.makeRequest(options)
+        let params = parseBraveQuery(req.url?.absoluteString ?? "")
+        #expect(params["freshness"] == "pd")
+    }
+
+    @Test func freshnessShortFormWMapsToProductWeek() throws {
+        let options = SearchOptions(query: "test", timeRange: "w")
+        let req = try backend.makeRequest(options)
+        let params = parseBraveQuery(req.url?.absoluteString ?? "")
+        #expect(params["freshness"] == "pw")
+    }
+
+    @Test func freshnessShortFormMMapsToProductMonth() throws {
+        let options = SearchOptions(query: "test", timeRange: "m")
+        let req = try backend.makeRequest(options)
+        let params = parseBraveQuery(req.url?.absoluteString ?? "")
+        #expect(params["freshness"] == "pm")
+    }
+
+    @Test func freshnessShortFormYMapsToProductYear() throws {
+        let options = SearchOptions(query: "test", timeRange: "y")
+        let req = try backend.makeRequest(options)
+        let params = parseBraveQuery(req.url?.absoluteString ?? "")
+        #expect(params["freshness"] == "py")
+    }
+
+    @Test func freshnessAbsentWhenTimeRangeEmpty() throws {
+        let options = SearchOptions(query: "test", timeRange: "")
+        let req = try backend.makeRequest(options)
+        let params = parseBraveQuery(req.url?.absoluteString ?? "")
+        #expect(params["freshness"] == nil)
+    }
+
+    @Test func freshnessAbsentWhenTimeRangeUnknown() throws {
+        let options = SearchOptions(query: "test", timeRange: "yesterday")
+        let req = try backend.makeRequest(options)
+        let params = parseBraveQuery(req.url?.absoluteString ?? "")
+        #expect(params["freshness"] == nil)
+    }
+
+    // MARK: endpoint
 
     @Test func endpointIsCorrect() throws {
         let req = try backend.makeRequest(SearchOptions(query: "test"))
