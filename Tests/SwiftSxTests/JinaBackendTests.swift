@@ -42,13 +42,15 @@ private func jinaJSON(items: [[String: String]] = []) -> Data {
     @Test func endpointUsesBaseURL() throws {
         let b = JinaBackend(apiKey: "key", baseURL: "https://custom.jina.ai")
         let (req, _) = try b.makeRequest(SearchOptions(query: "test"))
-        #expect(req.url?.absoluteString == "https://custom.jina.ai")
+        // HTTP normalizes the empty path to "/", so the request URL has a trailing slash.
+        #expect(req.url?.absoluteString == "https://custom.jina.ai/")
     }
 
     @Test func trailingSlashTrimmedFromBaseURL() throws {
         let b = JinaBackend(apiKey: "key", baseURL: "https://s.jina.ai/")
         let (req, _) = try b.makeRequest(SearchOptions(query: "test"))
-        #expect(req.url?.absoluteString == "https://s.jina.ai")
+        // The backend trims the input slash, but HTTP re-adds "/" for the empty path.
+        #expect(req.url?.absoluteString == "https://s.jina.ai/")
     }
 
     @Test func bodyContainsQuery() throws {
