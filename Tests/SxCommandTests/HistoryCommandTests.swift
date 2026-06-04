@@ -40,12 +40,26 @@ import SwiftSx
         #expect(subcommandNames.contains("history"))
     }
 
-    @Test func historyNegativeLimitFailsValidation() throws {
+    @Test func historyNegativeLimitMapsToUsageError() throws {
         // Use --limit=VALUE: "-n -5" is misparsed (ArgumentParser treats -5 as
-        // an option). The negative value is what validate() should reject.
-        var command = try HistoryCommand.parse(["--limit=-5"])
-        #expect(throws: (any Error).self) {
-            try command.validate()
+        // an option). Parsing now succeeds (no validate()); the negative value
+        // is rejected at limit-resolution time and mapped to the usage exit
+        // code (2) via SxError, so the tool's exit-code contract is honoured.
+        let command = try HistoryCommand.parse(["--limit=-5"])
+        do {
+            _ = try command.resolvedLimit()
+            Issue.record("expected resolvedLimit() to throw for a negative limit")
+        } catch let error as SxError {
+            #expect(error.exitCode == .usage)
         }
+    }
+
+    @Test func historyNonNegativeLimitResolves() throws {
+        #expect(try HistoryCommand.parse(["--limit=5"]).resolvedLimit() == 5)
+    }
+
+    @Test func historyZeroLimitResolves() throws {
+        // 0 is valid and means "show all".
+        #expect(try HistoryCommand.parse(["--limit=0"]).resolvedLimit() == 0)
     }
 }

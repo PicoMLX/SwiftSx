@@ -96,6 +96,23 @@ import Testing
         #expect(recovered.count == 1)
     }
 
+    @Test func formatLineCollapsesEmbeddedNewlines() {
+        // A query containing CR/LF must not break the one-line-per-entry format:
+        // the only newline in the produced line is the trailing record terminator.
+        let entry = HistoryEntry(timestamp: Date(), query: "line one\nline two\r\nline three")
+        let line = History.formatLine(entry)
+
+        #expect(line.hasSuffix("\n"))
+        #expect(!line.dropLast().contains("\n"))   // no embedded LF before the terminator
+        #expect(!line.contains("\r"))              // CR collapsed too
+
+        // And it round-trips as exactly one entry (continuation lines preserved
+        // as spaces, not dropped as malformed).
+        let recovered = History.parseLines(line)
+        #expect(recovered.count == 1)
+        #expect(recovered[0].query == "line one line two  line three")
+    }
+
     @Test func parseLinesAllowsTabInQuery() {
         // A query that itself contains a tab must still parse correctly:
         // split(maxSplits:1) ensures only the first tab is the separator.

@@ -86,13 +86,20 @@ extension History {
 
     /// Formats a single history entry as a tab-separated storage line.
     ///
-    /// Output format: `"<RFC3339 timestamp>\t<query>\n"`.
+    /// Output format: `"<RFC3339 timestamp>\t<query>\n"`. Any embedded carriage
+    /// returns or line feeds in the query are collapsed to single spaces so a
+    /// multi-line query can never break the one-entry-per-line format. This is
+    /// the single choke point through which every stored line is produced, so
+    /// the invariant holds regardless of how the entry was constructed.
     ///
     /// - Parameter entry: The entry to format.
     /// - Returns: A ready-to-append line including the trailing newline.
     public static func formatLine(_ entry: HistoryEntry) -> String {
         let iso = iso8601Formatter.string(from: entry.timestamp)
-        return "\(iso)\t\(entry.query)\n"
+        let singleLine = entry.query
+            .replacingOccurrences(of: "\r", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+        return "\(iso)\t\(singleLine)\n"
     }
 
     /// Parses the full text of a history file into an array of entries.
@@ -173,12 +180,10 @@ public enum History {
     ///   - ``SxError`` with code `.general` when a read or write fails.
     public static func append(query: String, config: Config) async throws {
         guard config.historyEnabled else { return }
-        // Collapse embedded CR/newlines to spaces so a multi-line query can't
-        // corrupt the one-entry-per-line history format.
-        let singleLine = query
-            .replacingOccurrences(of: "\r", with: " ")
-            .replacingOccurrences(of: "\n", with: " ")
-        let trimmedQuery = singleLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Skip blank (whitespace-only) queries. Any internal CR/LF are collapsed
+        // to spaces by `formatLine` when the storage line is produced, so they
+        // cannot corrupt the one-entry-per-line history format.
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedQuery.isEmpty else { return }
 
         var env: [String: String] = [:]
@@ -309,11 +314,14 @@ public enum History {
 
     /// Deletes the history file if it exists.
     ///
-    /// If the file is already absent this is a no-op (not an error).
+    /// If the file is already absent this is a no-op (not an error). If a
+    /// *directory* stands at the history path (a malformed store), this refuses
+    /// to delete it rather than recursively removing the tree.
     ///
     /// - Throws:
     ///   - ``SxError`` with code `.refused` when the sandbox denies access.
-    ///   - ``SxError`` with code `.general` when deletion fails.
+    ///   - ``SxError`` with code `.general` when a directory stands at the path,
+    ///     or when deletion fails.
     public static func clear() async throws {
         var env: [String: String] = [:]
         if let xdg = Shell.env("XDG_STATE_HOME") { env["XDG_STATE_HOME"] = xdg }
@@ -328,7 +336,16 @@ public enum History {
             throw SxError(.refused, "cannot access history file at \(path): \(error)")
         }
 
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        // Refuse to delete a directory standing at the history path: removeItem
+        // would recursively delete its whole tree (including unrelated files a
+        // user may have placed under a colliding `history/` directory). The
+        // store is always a single file, so a directory here is a malformed
+        // state the caller must resolve manually.
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else { return }
+        if isDirectory.boolValue {
+            throw SxError(.general, "history path is a directory, not a file: \(path) — remove it manually (the history store is a single file)")
+        }
 
         do {
             try FileManager.default.removeItem(at: url)
