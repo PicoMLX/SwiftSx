@@ -126,10 +126,16 @@ public struct TavilyBackend: SearchBackend {
             )
         }
 
-        // Tavily has no pagination: every call returns the full result set on "page 1".
-        // Return an empty slice rather than silently replaying the same page 1 results.
+        // Tavily has no pagination — every result comes back on page 1. Throwing
+        // (rather than returning []) lets the manager fall back to another engine
+        // and gives an explicit search an actionable message instead of a silent
+        // empty success.
         if options.pageNo > 1 {
-            return []
+            throw BackendError(
+                backend: "tavily",
+                code: .invalidResponse,
+                message: "tavily does not support pagination — only page 1 is available (pageNo \(options.pageNo) requested)"
+            )
         }
 
         let (request, bodyData) = try makeRequest(options)

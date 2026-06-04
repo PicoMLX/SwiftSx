@@ -149,59 +149,6 @@ private func braveJSON(results: [[String: String]] = []) -> Data {
         #expect(params["offset"] == "9")
     }
 
-    // MARK: result_filter (categories)
-
-    @Test func resultFilterNewsWhenCategoriesNews() throws {
-        let options = SearchOptions(query: "test", categories: ["news"])
-        let req = try backend.makeRequest(options)
-        let params = parseBraveQuery(req.url?.absoluteString ?? "")
-        #expect(params["result_filter"] == "news")
-    }
-
-    @Test func resultFilterVideosWhenCategoriesVideos() throws {
-        let options = SearchOptions(query: "test", categories: ["videos"])
-        let req = try backend.makeRequest(options)
-        let params = parseBraveQuery(req.url?.absoluteString ?? "")
-        #expect(params["result_filter"] == "videos")
-    }
-
-    @Test func resultFilterWebWhenCategoriesGeneral() throws {
-        let options = SearchOptions(query: "test", categories: ["general"])
-        let req = try backend.makeRequest(options)
-        let params = parseBraveQuery(req.url?.absoluteString ?? "")
-        #expect(params["result_filter"] == "web")
-    }
-
-    @Test func resultFilterWebWhenCategoriesWeb() throws {
-        let options = SearchOptions(query: "test", categories: ["web"])
-        let req = try backend.makeRequest(options)
-        let params = parseBraveQuery(req.url?.absoluteString ?? "")
-        #expect(params["result_filter"] == "web")
-    }
-
-    @Test func resultFilterAbsentWhenCategoriesEmpty() throws {
-        let options = SearchOptions(query: "test", categories: [])
-        let req = try backend.makeRequest(options)
-        let params = parseBraveQuery(req.url?.absoluteString ?? "")
-        #expect(params["result_filter"] == nil)
-    }
-
-    @Test func resultFilterAbsentWhenCategoriesUnrecognized() throws {
-        // Unrecognized categories must not produce a result_filter at all
-        let options = SearchOptions(query: "test", categories: ["science", "finance"])
-        let req = try backend.makeRequest(options)
-        let params = parseBraveQuery(req.url?.absoluteString ?? "")
-        #expect(params["result_filter"] == nil)
-    }
-
-    @Test func resultFilterDropsUnrecognizedKeepsRecognized() throws {
-        // Mixed: "news" is recognized; "science" is not → only "news" in the filter
-        let options = SearchOptions(query: "test", categories: ["news", "science"])
-        let req = try backend.makeRequest(options)
-        let params = parseBraveQuery(req.url?.absoluteString ?? "")
-        #expect(params["result_filter"] == "news")
-    }
-
     @Test func safesearchOffMapsToOff() throws {
         let options = SearchOptions(query: "test", safeSearch: "off")
         let req = try backend.makeRequest(options)

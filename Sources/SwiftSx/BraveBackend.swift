@@ -195,23 +195,6 @@ public struct BraveBackend: SearchBackend {
             }
         }
 
-        // result_filter — map recognized categories to Brave's result_filter (comma-joined).
-        // Recognized: "news" → "news", "videos" → "videos", "general"/"web" → "web".
-        // Unrecognized categories are dropped; if nothing maps, omit result_filter entirely.
-        if !options.categories.isEmpty {
-            let mapped: [String] = options.categories.compactMap { cat in
-                switch cat {
-                case "news":           return "news"
-                case "videos":         return "videos"
-                case "general", "web": return "web"
-                default:               return nil
-                }
-            }
-            if !mapped.isEmpty {
-                queryItems.append(URLQueryItem(name: "result_filter", value: mapped.joined(separator: ",")))
-            }
-        }
-
         // freshness — map options.timeRange to Brave's freshness values.
         // Accepted short forms: d/day→pd, w/week→pw, m/month→pm, y/year→py.
         // Unknown values are omitted (do not send a bad value).

@@ -531,8 +531,8 @@ struct TavilySearchTests {
 
     // MARK: Pagination short-circuit
 
-    @Test func pageNoTwoReturnsEmptyWithoutHittingNetwork() async throws {
-        // Tavily has no pagination; page > 1 must short-circuit to [] without any
+    @Test func pageNoTwoThrowsWithoutHittingNetwork() async throws {
+        // Tavily has no pagination; page > 1 must throw a BackendError without any
         // network request. We install a handler that would fail the test if invoked.
         let backend = makeBackend()
         MockURLProtocol.handler = { _ in
@@ -543,12 +543,19 @@ struct TavilySearchTests {
                     Data())
         }
 
-        let results = try await backend.search(SearchOptions(query: "test", pageNo: 2))
-        #expect(results.isEmpty)
+        await #expect(throws: BackendError.self) {
+            _ = try await backend.search(SearchOptions(query: "test", pageNo: 2))
+        }
+
+        do {
+            _ = try await backend.search(SearchOptions(query: "test", pageNo: 2))
+        } catch let error as BackendError {
+            #expect(error.code == .invalidResponse)
+        }
     }
 
-    @Test func pageNoHighReturnsEmpty() async throws {
-        // Any pageNo > 1 should return [] immediately.
+    @Test func pageNoHighThrows() async throws {
+        // Any pageNo > 1 should throw a BackendError immediately.
         let backend = makeBackend()
         MockURLProtocol.handler = { _ in
             Issue.record("Tavily backend should not make a network request for pageNo > 1")
@@ -558,8 +565,15 @@ struct TavilySearchTests {
                     Data())
         }
 
-        let results = try await backend.search(SearchOptions(query: "test", pageNo: 10))
-        #expect(results.isEmpty)
+        await #expect(throws: BackendError.self) {
+            _ = try await backend.search(SearchOptions(query: "test", pageNo: 10))
+        }
+
+        do {
+            _ = try await backend.search(SearchOptions(query: "test", pageNo: 10))
+        } catch let error as BackendError {
+            #expect(error.code == .invalidResponse)
+        }
     }
 
     @Test func pageNoOneStillHitsNetwork() async throws {
