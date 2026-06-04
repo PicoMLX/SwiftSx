@@ -662,8 +662,8 @@ import Testing
             url: "https://tracker.example.com",
             engine: "brave",
             category: "files",
-            filesize: "700 MB",
-            magnetlink: "magnet:?xt=urn:btih:abc"
+            magnetlink: "magnet:?xt=urn:btih:abc",
+            filesize: "700 MB"
         )
         let out = ResultRenderer.renderPlain(query: "q", results: [result], expand: false, noColor: true)
         #expect(out.contains("700 MB"))
@@ -676,8 +676,8 @@ import Testing
             url: "https://img.example.com/photo.jpg",
             engine: "brave",
             category: "images",
-            resolution: "1920x1080",
-            source: "Flickr"
+            source: "Flickr",
+            resolution: "1920x1080"
         )
         let out = ResultRenderer.renderPlain(query: "q", results: [result], expand: false, noColor: true)
         #expect(out.contains("1920x1080"))
