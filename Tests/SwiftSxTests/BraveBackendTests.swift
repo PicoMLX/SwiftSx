@@ -111,7 +111,7 @@ private func braveJSON(results: [[String: String]] = []) -> Data {
 
     @Test func offsetCalculatedWhenPageNoGreaterThanOne() throws {
         // pageNo=2 → offset=1 (zero-based page index, not result offset)
-        let options = SearchOptions(query: "test", numResults: 10, pageNo: 2)
+        let options = SearchOptions(query: "test", pageNo: 2, numResults: 10)
         let req = try backend.makeRequest(options)
         let params = parseBraveQuery(req.url?.absoluteString ?? "")
         #expect(params["offset"] == "1")
@@ -119,7 +119,7 @@ private func braveJSON(results: [[String: String]] = []) -> Data {
 
     @Test func offsetPageThreeIsTwo() throws {
         // pageNo=3 → offset=2 (independent of count)
-        let options = SearchOptions(query: "test", numResults: 0, pageNo: 3)
+        let options = SearchOptions(query: "test", pageNo: 3, numResults: 0)
         let req = try backend.makeRequest(options)
         let params = parseBraveQuery(req.url?.absoluteString ?? "")
         #expect(params["offset"] == "2")
@@ -127,7 +127,7 @@ private func braveJSON(results: [[String: String]] = []) -> Data {
 
     @Test func offsetPageFourIsThree() throws {
         // pageNo=4 → offset=3 (count does not affect offset)
-        let options = SearchOptions(query: "test", numResults: 5, pageNo: 4)
+        let options = SearchOptions(query: "test", pageNo: 4, numResults: 5)
         let req = try backend.makeRequest(options)
         let params = parseBraveQuery(req.url?.absoluteString ?? "")
         #expect(params["offset"] == "3")
