@@ -39,4 +39,11 @@ import SwiftSx
         }
         #expect(subcommandNames.contains("history"))
     }
+
+    @Test func historyNegativeLimitFailsValidation() throws {
+        var command = try HistoryCommand.parse(["-n", "-5"])
+        #expect(throws: (any Error).self) {
+            try command.validate()
+        }
+    }
 }

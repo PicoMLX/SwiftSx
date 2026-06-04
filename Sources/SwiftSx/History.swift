@@ -54,24 +54,32 @@ extension History {
 // MARK: - Pure helpers
 
 extension History {
-    // MARK: ISO8601 formatter (shared, thread-safe via let)
+    // MARK: ISO8601 formatter
 
     /// ISO 8601 / RFC 3339 formatter used for storage.
-    static let iso8601Formatter: ISO8601DateFormatter = {
+    ///
+    /// Returns a fresh instance each call — `ISO8601DateFormatter` is not
+    /// `Sendable` and is not thread-safe to share, so a computed property avoids
+    /// both the Swift 6 concurrency-safety error and any data races.
+    private static var iso8601Formatter: ISO8601DateFormatter {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return f
-    }()
+    }
 
     // MARK: Display formatter
 
     /// `DateFormatter` for human-readable display lines.
-    static let displayFormatter: DateFormatter = {
+    ///
+    /// Returns a fresh instance each call — `DateFormatter` is not `Sendable`
+    /// and is not thread-safe to share, so a computed property avoids both the
+    /// Swift 6 concurrency-safety error and any data races.
+    private static var displayFormatter: DateFormatter {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyy-MM-dd HH:mm"
         return f
-    }()
+    }
 
     // MARK: Formatting / parsing
 
@@ -164,7 +172,12 @@ public enum History {
     ///   - ``SxError`` with code `.general` when a read or write fails.
     public static func append(query: String, config: Config) async throws {
         guard config.historyEnabled else { return }
-        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Collapse embedded CR/newlines to spaces so a multi-line query can't
+        // corrupt the one-entry-per-line history format.
+        let singleLine = query
+            .replacingOccurrences(of: "\r", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+        let trimmedQuery = singleLine.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedQuery.isEmpty else { return }
 
         var env: [String: String] = [:]
@@ -192,53 +205,55 @@ public enum History {
             throw SxError(.general, "cannot create history directory at \(dir.path): \(error)")
         }
 
-        // Append the new entry.
+        // Build the new line for this entry.
         let entry = HistoryEntry(timestamp: Date(), query: trimmedQuery)
-        let line = formatLine(entry)
-        let lineData = Data(line.utf8)
+        let newLine = formatLine(entry)
 
-        if FileManager.default.fileExists(atPath: url.path) {
-            // Append to existing file via FileHandle.
-            do {
-                let handle = try FileHandle(forWritingTo: url)
-                defer { try? handle.close() }
-                try handle.seekToEnd()
-                try handle.write(contentsOf: lineData)
-            } catch {
-                throw SxError(.general, "cannot write to history file at \(path): \(error)")
+        if config.maxHistory > 0 {
+            // Read existing content once, append in memory, trim, then write once.
+            let existingText: String
+            if FileManager.default.fileExists(atPath: url.path) {
+                do {
+                    let data = try Data(contentsOf: url)
+                    existingText = String(decoding: data, as: UTF8.self)
+                } catch {
+                    throw SxError(.general, "cannot read history file at \(path): \(error)")
+                }
+            } else {
+                existingText = ""
             }
-        } else {
-            // Create a new file.
-            do {
-                try lineData.write(to: url)
-            } catch {
-                throw SxError(.general, "cannot write history file at \(path): \(error)")
-            }
-        }
 
-        // Trim to maxHistory if needed.
-        guard config.maxHistory > 0 else { return }
+            var allLines = existingText
+                .components(separatedBy: "\n")
+                .filter { !$0.isEmpty }
+                .map { $0 + "\n" }
+            allLines.append(newLine)
 
-        let existingText: String
-        do {
-            let data = try Data(contentsOf: url)
-            existingText = String(decoding: data, as: UTF8.self)
-        } catch {
-            throw SxError(.general, "cannot read history file at \(path): \(error)")
-        }
-
-        let allLines = existingText
-            .components(separatedBy: "\n")
-            .filter { !$0.isEmpty }
-            .map { $0 + "\n" }
-
-        let kept = trimmed(allLines, maxHistory: config.maxHistory)
-        if kept.count < allLines.count {
+            let kept = trimmed(allLines, maxHistory: config.maxHistory)
             let rewritten = kept.joined()
             do {
                 try Data(rewritten.utf8).write(to: url)
             } catch {
-                throw SxError(.general, "cannot rewrite history file at \(path): \(error)")
+                throw SxError(.general, "cannot write history file at \(path): \(error)")
+            }
+        } else {
+            // No trimming needed — append the single line (create the file if absent).
+            let lineData = Data(newLine.utf8)
+            if FileManager.default.fileExists(atPath: url.path) {
+                do {
+                    let handle = try FileHandle(forWritingTo: url)
+                    defer { try? handle.close() }
+                    try handle.seekToEnd()
+                    try handle.write(contentsOf: lineData)
+                } catch {
+                    throw SxError(.general, "cannot write to history file at \(path): \(error)")
+                }
+            } else {
+                do {
+                    try lineData.write(to: url)
+                } catch {
+                    throw SxError(.general, "cannot write history file at \(path): \(error)")
+                }
             }
         }
     }

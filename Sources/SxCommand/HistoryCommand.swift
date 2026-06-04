@@ -25,6 +25,14 @@ public struct HistoryCommand: AsyncParsableCommand {
 
     public init() {}
 
+    // MARK: Validation
+
+    public func validate() throws {
+        guard limit >= 0 else {
+            throw ValidationError("Limit must be greater than or equal to 0.")
+        }
+    }
+
     // MARK: run
 
     public func run() async throws {
