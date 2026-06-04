@@ -133,6 +133,75 @@ private func braveJSON(results: [[String: String]] = []) -> Data {
         #expect(params["offset"] == "3")
     }
 
+    @Test func offsetClampsToNineWhenPageNoExceedsTen() throws {
+        // pageNo=15 → raw offset would be 14, but Brave's max is 9
+        let options = SearchOptions(query: "test", pageNo: 15)
+        let req = try backend.makeRequest(options)
+        let params = parseBraveQuery(req.url?.absoluteString ?? "")
+        #expect(params["offset"] == "9")
+    }
+
+    @Test func offsetAtMaxBoundaryIsNine() throws {
+        // pageNo=10 → raw offset=9 (exactly at the cap)
+        let options = SearchOptions(query: "test", pageNo: 10)
+        let req = try backend.makeRequest(options)
+        let params = parseBraveQuery(req.url?.absoluteString ?? "")
+        #expect(params["offset"] == "9")
+    }
+
+    // MARK: result_filter (categories)
+
+    @Test func resultFilterNewsWhenCategoriesNews() throws {
+        let options = SearchOptions(query: "test", categories: ["news"])
+        let req = try backend.makeRequest(options)
+        let params = parseBraveQuery(req.url?.absoluteString ?? "")
+        #expect(params["result_filter"] == "news")
+    }
+
+    @Test func resultFilterVideosWhenCategoriesVideos() throws {
+        let options = SearchOptions(query: "test", categories: ["videos"])
+        let req = try backend.makeRequest(options)
+        let params = parseBraveQuery(req.url?.absoluteString ?? "")
+        #expect(params["result_filter"] == "videos")
+    }
+
+    @Test func resultFilterWebWhenCategoriesGeneral() throws {
+        let options = SearchOptions(query: "test", categories: ["general"])
+        let req = try backend.makeRequest(options)
+        let params = parseBraveQuery(req.url?.absoluteString ?? "")
+        #expect(params["result_filter"] == "web")
+    }
+
+    @Test func resultFilterWebWhenCategoriesWeb() throws {
+        let options = SearchOptions(query: "test", categories: ["web"])
+        let req = try backend.makeRequest(options)
+        let params = parseBraveQuery(req.url?.absoluteString ?? "")
+        #expect(params["result_filter"] == "web")
+    }
+
+    @Test func resultFilterAbsentWhenCategoriesEmpty() throws {
+        let options = SearchOptions(query: "test", categories: [])
+        let req = try backend.makeRequest(options)
+        let params = parseBraveQuery(req.url?.absoluteString ?? "")
+        #expect(params["result_filter"] == nil)
+    }
+
+    @Test func resultFilterAbsentWhenCategoriesUnrecognized() throws {
+        // Unrecognized categories must not produce a result_filter at all
+        let options = SearchOptions(query: "test", categories: ["science", "finance"])
+        let req = try backend.makeRequest(options)
+        let params = parseBraveQuery(req.url?.absoluteString ?? "")
+        #expect(params["result_filter"] == nil)
+    }
+
+    @Test func resultFilterDropsUnrecognizedKeepsRecognized() throws {
+        // Mixed: "news" is recognized; "science" is not → only "news" in the filter
+        let options = SearchOptions(query: "test", categories: ["news", "science"])
+        let req = try backend.makeRequest(options)
+        let params = parseBraveQuery(req.url?.absoluteString ?? "")
+        #expect(params["result_filter"] == "news")
+    }
+
     @Test func safesearchOffMapsToOff() throws {
         let options = SearchOptions(query: "test", safeSearch: "off")
         let req = try backend.makeRequest(options)
@@ -168,13 +237,22 @@ private func braveJSON(results: [[String: String]] = []) -> Data {
         #expect(params["safesearch"] == "moderate")
     }
 
-    // MARK: search_lang
+    // MARK: search_lang / ui_lang
 
-    @Test func searchLangPresentWhenLanguageSet() throws {
+    @Test func searchLangSplitsLocaleToLangCode() throws {
+        // "en-US" → search_lang="en" (bare language code)
         let options = SearchOptions(query: "test", language: "en-US")
         let req = try backend.makeRequest(options)
         let params = parseBraveQuery(req.url?.absoluteString ?? "")
-        #expect(params["search_lang"] == "en-US")
+        #expect(params["search_lang"] == "en")
+    }
+
+    @Test func uiLangSetToFullLocaleWhenDashPresent() throws {
+        // "en-US" → ui_lang="en-US" (the original locale)
+        let options = SearchOptions(query: "test", language: "en-US")
+        let req = try backend.makeRequest(options)
+        let params = parseBraveQuery(req.url?.absoluteString ?? "")
+        #expect(params["ui_lang"] == "en-US")
     }
 
     @Test func searchLangAbsentWhenLanguageEmpty() throws {
@@ -184,11 +262,29 @@ private func braveJSON(results: [[String: String]] = []) -> Data {
         #expect(params["search_lang"] == nil)
     }
 
-    @Test func searchLangPassesThroughLocaleCode() throws {
+    @Test func uiLangAbsentWhenLanguageEmpty() throws {
+        let options = SearchOptions(query: "test", language: "")
+        let req = try backend.makeRequest(options)
+        let params = parseBraveQuery(req.url?.absoluteString ?? "")
+        #expect(params["ui_lang"] == nil)
+    }
+
+    @Test func searchLangNoDashSentAsIs() throws {
+        // "en" (no dash) → search_lang="en", no ui_lang
+        let options = SearchOptions(query: "test", language: "en")
+        let req = try backend.makeRequest(options)
+        let params = parseBraveQuery(req.url?.absoluteString ?? "")
+        #expect(params["search_lang"] == "en")
+        #expect(params["ui_lang"] == nil)
+    }
+
+    @Test func searchLangDeLocaleSplits() throws {
+        // "de-DE" → search_lang="de", ui_lang="de-DE"
         let options = SearchOptions(query: "test", language: "de-DE")
         let req = try backend.makeRequest(options)
         let params = parseBraveQuery(req.url?.absoluteString ?? "")
-        #expect(params["search_lang"] == "de-DE")
+        #expect(params["search_lang"] == "de")
+        #expect(params["ui_lang"] == "de-DE")
     }
 
     // MARK: freshness (time_range → freshness)

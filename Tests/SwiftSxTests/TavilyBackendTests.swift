@@ -528,6 +528,52 @@ struct TavilySearchTests {
             #expect(error.message.contains("TAVILY_API_KEY"))
         }
     }
+
+    // MARK: Pagination short-circuit
+
+    @Test func pageNoTwoReturnsEmptyWithoutHittingNetwork() async throws {
+        // Tavily has no pagination; page > 1 must short-circuit to [] without any
+        // network request. We install a handler that would fail the test if invoked.
+        let backend = makeBackend()
+        MockURLProtocol.handler = { _ in
+            Issue.record("Tavily backend should not make a network request for pageNo > 1")
+            return (HTTPURLResponse(url: URL(string: "https://api.tavily.com/search")!,
+                                   statusCode: 200, httpVersion: "HTTP/1.1",
+                                   headerFields: [:])!,
+                    Data())
+        }
+
+        let results = try await backend.search(SearchOptions(query: "test", pageNo: 2))
+        #expect(results.isEmpty)
+    }
+
+    @Test func pageNoHighReturnsEmpty() async throws {
+        // Any pageNo > 1 should return [] immediately.
+        let backend = makeBackend()
+        MockURLProtocol.handler = { _ in
+            Issue.record("Tavily backend should not make a network request for pageNo > 1")
+            return (HTTPURLResponse(url: URL(string: "https://api.tavily.com/search")!,
+                                   statusCode: 200, httpVersion: "HTTP/1.1",
+                                   headerFields: [:])!,
+                    Data())
+        }
+
+        let results = try await backend.search(SearchOptions(query: "test", pageNo: 10))
+        #expect(results.isEmpty)
+    }
+
+    @Test func pageNoOneStillHitsNetwork() async throws {
+        // pageNo=1 (the default) must NOT be short-circuited.
+        let backend = makeBackend()
+        let body = tavilyJSON(results: [
+            tavilyItem(title: "Page1Result", url: "https://example.com"),
+        ])
+        setHandler(status: 200, body: body)
+
+        let results = try await backend.search(SearchOptions(query: "test", pageNo: 1))
+        #expect(results.count == 1)
+        #expect(results[0].title == "Page1Result")
+    }
 }
 
 // MARK: - Factory: TavilyBackend.makeTavily(from:transport:)

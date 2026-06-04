@@ -174,16 +174,42 @@ public struct BraveBackend: SearchBackend {
             URLQueryItem(name: "safesearch", value: safeSearch),
         ]
 
-        // offset — zero-based page index (max 9); only when pageNo > 1.
+        // offset — zero-based page index; Brave's max is 9. Only send when pageNo > 1.
         // Brave's offset is a page index, not a result offset, so offset = pageNo - 1.
         if options.pageNo > 1 {
-            let offset = options.pageNo - 1
+            let offset = min(options.pageNo - 1, 9)
             queryItems.append(URLQueryItem(name: "offset", value: String(offset)))
         }
 
-        // search_lang — when options.language is non-empty.
+        // search_lang / ui_lang — Brave's search_lang wants a bare language code (e.g.
+        // "en"), not a full locale ("en-US"). When the caller supplies a locale that
+        // contains a "-", split on the first "-" and send the language code as
+        // search_lang plus the original locale string as ui_lang.
         if !options.language.isEmpty {
-            queryItems.append(URLQueryItem(name: "search_lang", value: options.language))
+            if let dashIndex = options.language.firstIndex(of: "-") {
+                let langCode = String(options.language[options.language.startIndex..<dashIndex])
+                queryItems.append(URLQueryItem(name: "search_lang", value: langCode))
+                queryItems.append(URLQueryItem(name: "ui_lang",     value: options.language))
+            } else {
+                queryItems.append(URLQueryItem(name: "search_lang", value: options.language))
+            }
+        }
+
+        // result_filter — map recognized categories to Brave's result_filter (comma-joined).
+        // Recognized: "news" → "news", "videos" → "videos", "general"/"web" → "web".
+        // Unrecognized categories are dropped; if nothing maps, omit result_filter entirely.
+        if !options.categories.isEmpty {
+            let mapped: [String] = options.categories.compactMap { cat in
+                switch cat {
+                case "news":           return "news"
+                case "videos":         return "videos"
+                case "general", "web": return "web"
+                default:               return nil
+                }
+            }
+            if !mapped.isEmpty {
+                queryItems.append(URLQueryItem(name: "result_filter", value: mapped.joined(separator: ",")))
+            }
         }
 
         // freshness — map options.timeRange to Brave's freshness values.
