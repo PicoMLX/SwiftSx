@@ -28,7 +28,7 @@ private struct TavilyRequest: Encodable {
 
 /// The JSON envelope returned by the Tavily `/search` endpoint.
 private struct TavilyResponse: Decodable {
-    let results: [Item]
+    let results: [Item]?
 
     struct Item: Decodable {
         let title: String?
@@ -129,7 +129,7 @@ public struct TavilyBackend: SearchBackend {
         case 200...299:
             do {
                 let decoded = try JSONDecoder().decode(TavilyResponse.self, from: data)
-                return decoded.results.map { item in
+                return (decoded.results ?? []).map { item in
                     let resolvedContent: String
                     if includeRawContent, let raw = item.rawContent, !raw.isEmpty {
                         resolvedContent = raw
@@ -198,10 +198,12 @@ public struct TavilyBackend: SearchBackend {
             queryString = "site:\(options.site) \(options.query)"
         }
 
-        // max_results — default to 10 when ≤ 0 or > 20.
+        // max_results — clamp to 1...20; default to 10 when ≤ 0 (matches Brave).
         let maxResults: Int
-        if options.numResults <= 0 || options.numResults > 20 {
+        if options.numResults <= 0 {
             maxResults = 10
+        } else if options.numResults > 20 {
+            maxResults = 20
         } else {
             maxResults = options.numResults
         }

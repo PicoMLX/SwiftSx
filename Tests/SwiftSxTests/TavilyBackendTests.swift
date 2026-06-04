@@ -109,11 +109,11 @@ private func tavilyItem(
         #expect(dict["max_results"] as? Int == 10)
     }
 
-    @Test func bodyMaxResultsDefaultsTenWhenExceedsTwenty() throws {
+    @Test func bodyMaxResultsClampsToTwentyWhenExceedsTwenty() throws {
         let options = SearchOptions(query: "test", numResults: 25)
         let (_, body) = try backend.makeRequest(options)
         let dict = decodeTavilyBody(body)
-        #expect(dict["max_results"] as? Int == 10)
+        #expect(dict["max_results"] as? Int == 20)
     }
 
     @Test func bodyMaxResultsPassedThroughWhenInRange() throws {

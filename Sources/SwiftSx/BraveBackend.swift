@@ -12,7 +12,7 @@ private struct BraveResponse: Decodable {
     let web: Web?
 
     struct Web: Decodable {
-        let results: [Item]
+        let results: [Item]?
     }
 
     struct Item: Decodable {
