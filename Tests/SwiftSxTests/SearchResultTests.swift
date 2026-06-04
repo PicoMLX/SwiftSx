@@ -234,10 +234,14 @@ import Testing
     @Test func encodesImgSrcToCorrectKey() throws {
         let result = SearchResult(imgSrc: "https://example.com/img.png")
         let data = try JSONEncoder().encode(result)
-        let dict = try JSONDecoder().decode([String: String].self, from: data)
+        // Decode as heterogeneous JSON: the encoded object also contains arrays
+        // and numbers (engines, longitude, seed, …), so [String: String] would
+        // type-mismatch before we could assert.
+        let object = try JSONSerialization.jsonObject(with: data)
+        let json = try #require(object as? [String: Any])
         // The encoded key must be `img_src`, not `imgSrc`.
-        #expect(dict["img_src"] == "https://example.com/img.png")
-        #expect(dict["imgSrc"] == nil)
+        #expect(json["img_src"] as? String == "https://example.com/img.png")
+        #expect(json["imgSrc"] == nil)
     }
 
     @Test func roundTripFullResult() throws {

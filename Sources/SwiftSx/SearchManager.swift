@@ -82,14 +82,22 @@ public struct SearchManager: Sendable {
 
         var failures: [FailureRecord] = []
 
-        // Try primary.
-        do {
-            let results = try await primary.search(options)
-            return SearchOutcome(results: results, engine: primary.name)
-        } catch {
+        // Try primary — but skip the request entirely if it isn't configured,
+        // consistent with how fallbacks are handled.
+        if primary.isAvailable {
+            do {
+                let results = try await primary.search(options)
+                return SearchOutcome(results: results, engine: primary.name)
+            } catch {
+                failures.append(FailureRecord(
+                    label: "\(primary.name): \(reasonString(from: error))",
+                    isFailClosed: isFailClosed(error)
+                ))
+            }
+        } else {
             failures.append(FailureRecord(
-                label: "\(primary.name): \(reasonString(from: error))",
-                isFailClosed: isFailClosed(error)
+                label: "\(primary.name): not configured",
+                isFailClosed: true
             ))
         }
 
@@ -135,7 +143,9 @@ public struct SearchManager: Sendable {
     ///   - ``SxError`` with code `.usage` if the engine is not in the registry.
     ///   - ``SxError`` with code `.auth` if the engine is in the registry but
     ///     `isAvailable` is `false`.
-    ///   - Any error thrown by the backend itself (e.g. ``BackendError``).
+    ///   - ``SxError`` (mapped via ``BackendErrorCode/sxExitCode``) when the
+    ///     backend itself fails, so the explicit path carries the same stable
+    ///     exit-code contract as the fallback path.
     public func searchExplicit(
         _ engine: String,
         _ options: SearchOptions
@@ -151,8 +161,13 @@ public struct SearchManager: Sendable {
                     + "(e.g. the matching *_API_KEY env var or engines_\(engine).api_key in config.toml)"
             )
         }
-        let results = try await backend.search(options)
-        return SearchOutcome(results: results, engine: backend.name)
+        do {
+            let results = try await backend.search(options)
+            return SearchOutcome(results: results, engine: backend.name)
+        } catch let error as BackendError {
+            // Convert to the stable exit-code contract, mirroring the fallback path.
+            throw SxError(error.code.sxExitCode, error.message)
+        }
     }
 
     // MARK: - Private helpers

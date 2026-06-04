@@ -323,7 +323,7 @@ private struct MockBackend: SearchBackend {
         #expect(outcome.engine == "beta")
     }
 
-    @Test func backendErrorFromExplicitPropagatesDirectly() async throws {
+    @Test func backendErrorFromExplicitMapsToSxError() async throws {
         let be = BackendError(backend: "brave", code: .rateLimit, message: "slow down")
         let registry: [String: any SearchBackend] = [
             "brave": MockBackend(name: "brave", isAvailable: true, outcome: .failure(be)),
@@ -333,11 +333,57 @@ private struct MockBackend: SearchBackend {
         do {
             _ = try await manager.searchExplicit("brave", SearchOptions())
             Issue.record("Expected error to be thrown")
-        } catch let thrown as BackendError {
-            // The BackendError must propagate as-is, not wrapped in SxError.
-            #expect(thrown == be)
+        } catch let thrown as SxError {
+            // The BackendError is mapped to the stable exit-code contract.
+            #expect(thrown.exitCode == .general)   // .rateLimit -> .general
+            #expect(thrown.message == "slow down")
         } catch {
             Issue.record("Unexpected error type: \(error)")
+        }
+    }
+
+    @Test func explicitAuthFailureMapsToExit7() async throws {
+        let be = BackendError(backend: "brave", code: .auth, message: "bad key")
+        let registry: [String: any SearchBackend] = [
+            "brave": MockBackend(name: "brave", isAvailable: true, outcome: .failure(be)),
+        ]
+        let manager = try SearchManager(registry: registry, primary: "brave", fallbacks: [])
+        do {
+            _ = try await manager.searchExplicit("brave", SearchOptions())
+            Issue.record("Expected error to be thrown")
+        } catch let thrown as SxError {
+            #expect(thrown.exitCode == .auth)
+        }
+    }
+}
+
+// MARK: - Primary availability gating
+
+@Suite struct SearchManagerPrimaryAvailabilityTests {
+
+    @Test func unavailablePrimaryIsSkippedAndFallbackUsed() async throws {
+        let hit = [SearchResult(title: "Fallback hit", url: "https://f.example.com")]
+        let registry: [String: any SearchBackend] = [
+            "primary":  MockBackend(name: "primary",  isAvailable: false, outcome: .success([])),
+            "fallback": MockBackend(name: "fallback", isAvailable: true,  outcome: .success(hit)),
+        ]
+        let manager = try SearchManager(registry: registry, primary: "primary", fallbacks: ["fallback"])
+        let outcome = try await manager.search(SearchOptions(query: "x"))
+        #expect(outcome.engine == "fallback")
+        #expect(outcome.results == hit)
+    }
+
+    @Test func allUnavailableThrowsExit7() async throws {
+        let registry: [String: any SearchBackend] = [
+            "primary":  MockBackend(name: "primary",  isAvailable: false, outcome: .success([])),
+            "fallback": MockBackend(name: "fallback", isAvailable: false, outcome: .success([])),
+        ]
+        let manager = try SearchManager(registry: registry, primary: "primary", fallbacks: ["fallback"])
+        do {
+            _ = try await manager.search(SearchOptions(query: "x"))
+            Issue.record("Expected error to be thrown")
+        } catch let thrown as SxError {
+            #expect(thrown.exitCode == .auth)
         }
     }
 }
