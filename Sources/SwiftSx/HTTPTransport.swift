@@ -28,16 +28,8 @@ public struct HTTPTransport: Sendable {
     }
 
     /// Build a transport whose session applies `timeout` (seconds) to each
-    /// request and resource, so configured failover latency is honored.
-    public init(timeout: TimeInterval) {
-        let configuration = URLSessionConfiguration.default
-        configuration.timeoutIntervalForRequest = timeout
-        configuration.timeoutIntervalForResource = timeout
-        self.session = URLSession(configuration: configuration)
-    }
-
-    /// Build a transport with `timeout` and, optionally, TLS certificate
-    /// verification disabled.
+    /// request and resource (so configured failover latency is honored) and,
+    /// optionally, disables TLS certificate verification.
     ///
     /// - Important: `allowInsecureTLS` is honored **only on Apple platforms** (it
     ///   installs a `SecTrust` override). On Linux the flag is accepted but
@@ -45,7 +37,7 @@ public struct HTTPTransport: Sendable {
     ///   `URLSession` exposes no trust-override hook. It exists for a self-hosted
     ///   SearXNG with a self-signed certificate; it is never applied to the
     ///   public API backends.
-    public init(timeout: TimeInterval, allowInsecureTLS: Bool) {
+    public init(timeout: TimeInterval, allowInsecureTLS: Bool = false) {
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = timeout
         configuration.timeoutIntervalForResource = timeout
