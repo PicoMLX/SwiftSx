@@ -215,7 +215,7 @@ public struct Sx: AsyncParsableCommand {
     /// Standard input is the process's inherited stream, not a filesystem path,
     /// so this does not go through the sandbox.
     static func readStandardInput() -> String {
-        let data = FileHandle.standardInput.readDataToEndOfFile()
+        let data = (try? FileHandle.standardInput.readToEnd()) ?? Data()
         return String(decoding: data, as: UTF8.self)
     }
 
