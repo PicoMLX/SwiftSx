@@ -148,6 +148,9 @@ public struct Sx: AsyncParsableCommand {
         guard options.pageNo >= 1 else {
             throw SxError(.usage, "--page must be 1 or greater (got \(options.pageNo))")
         }
+        if let count = count, count < 1 {
+            throw SxError(.usage, "--count must be 1 or greater (got \(count))")
+        }
         return options
     }
 
@@ -184,6 +187,9 @@ public struct Sx: AsyncParsableCommand {
         }
         if !options.language.isEmpty {
             lines.append("  language:   \(options.language)")
+        }
+        if !options.safeSearch.isEmpty {
+            lines.append("  safe-search: \(options.safeSearch)")
         }
         lines.append("  format:     \(format.label)")
         return lines.joined(separator: "\n") + "\n"
@@ -313,9 +319,15 @@ public struct Sx: AsyncParsableCommand {
         let stderr = Shell.current.stderr
 
         do {
-            let config = try await Config.load()
-
+            // Reject a missing query BEFORE any filesystem/config access so the
+            // agent gets the usage exit code (2), not a config/sandbox error.
             let queryOverride = readsQueryFromStdin ? Self.readStandardInput() : nil
+            guard !(queryOverride ?? query.joined(separator: " "))
+                    .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw SxError(.usage, "no query given — pass search terms (e.g. sx \"swift concurrency\") or pipe them via sx -")
+            }
+
+            let config = try await Config.load()
             let options = try validatedSearchOptions(from: config, queryOverride: queryOverride)
 
             let format = OutputFormat.resolve(
@@ -331,17 +343,26 @@ public struct Sx: AsyncParsableCommand {
                 return
             }
 
-            let manager = try SearchManager.make(from: config)
-
+            // An explicit --engine must work even if the config's default/fallback
+            // engines are misconfigured, so build a manager whose primary IS the
+            // requested engine rather than validating the whole config.
             let outcome: SearchOutcome
             if let engine = engine {
+                let manager = try SearchManager(
+                    registry: SearchManager.makeRegistry(from: config),
+                    primary: engine, fallbacks: []
+                )
                 outcome = try await manager.searchExplicit(engine, options)
             } else {
+                let manager = try SearchManager.make(from: config)
                 outcome = try await manager.search(options)
             }
 
-            // Apply --first (top result only), then render.
-            let results = selectedResults(outcome.results)
+            // Drop URL-less results (e.g. a Tavily answer stub) in modes that need a
+            // URL — before --first — so they keep the top *usable* result.
+            let needsURL = html || text || format == .links
+            let base = needsURL ? outcome.results.filter { !$0.url.isEmpty } : outcome.results
+            let results = selectedResults(base)
             let rendered: String
             if html || text {
                 // Content mode: fetch each page and output its content — extracted
@@ -372,15 +393,20 @@ public struct Sx: AsyncParsableCommand {
             // output was written, so a history failure is a note, not an error.
             do {
                 try await History.append(query: options.query, config: config)
-            } catch let historyError as SxError {
-                stderr.write(Data("sx: note: history not recorded — \(historyError.message)\n".utf8))
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                let message = (error as? SxError)?.message ?? "\(error)"
+                stderr.write(Data("sx: note: history not recorded — \(message)\n".utf8))
             }
 
-            // --fail-empty: signal "no results" with a distinct exit code, after
-            // emitting the (valid, possibly empty) output above.
-            if failEmpty && results.isEmpty {
+            // Always note empty results so an agent can tell an empty search from a
+            // silent/broken one; --fail-empty additionally sets exit code 4.
+            if results.isEmpty {
                 stderr.write(Data("sx: no results for query: \(options.query)\n".utf8))
-                throw ExitCode(SxExitCode.empty.rawValue)
+                if failEmpty {
+                    throw ExitCode(SxExitCode.empty.rawValue)
+                }
             }
         } catch let error as SxError {
             stderr.write(Data("sx: \(error.message)\n".utf8))
