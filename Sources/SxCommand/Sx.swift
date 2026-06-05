@@ -91,7 +91,7 @@ public struct Sx: AsyncParsableCommand {
     @Flag(name: .long, help: "Show the full URL beneath each result (plain output).")
     public var expand: Bool = false
 
-    @Flag(name: .long, help: "Return only the top result.")
+    @Flag(name: .long, help: "Output only the top result.")
     public var first: Bool = false
 
     // MARK: Behaviour
@@ -152,6 +152,26 @@ public struct Sx: AsyncParsableCommand {
             throw SxError(.usage, "--count must be 1 or greater (got \(count))")
         }
         return options
+    }
+
+    /// Validates flag-only inputs that depend on neither config nor stdin, so the
+    /// command can reject them (usage, exit 2) before any I/O — crucially before
+    /// reading stdin for `sx -`, which can block on an open pipe/TTY. Pure, so it
+    /// is unit-testable directly.
+    ///
+    /// - Throws: ``SxError`` with code `.usage` for a non-positive `--count` /
+    ///   `--page`, or for `--html`/`--text` combined with `--json`/`--clean`
+    ///   (raw page bodies would break the "`--json` is always valid JSON" contract).
+    func validateFlags() throws {
+        if let count = count, count < 1 {
+            throw SxError(.usage, "--count must be 1 or greater (got \(count))")
+        }
+        if let page = page, page < 1 {
+            throw SxError(.usage, "--page must be 1 or greater (got \(page))")
+        }
+        if (html || text) && (json || clean) {
+            throw SxError(.usage, "--html/--text cannot be combined with --json/--clean (fetched page content is not JSON)")
+        }
     }
 
     /// Renders the `--dry-run` plan: a deterministic, human-readable summary of
@@ -271,7 +291,7 @@ public struct Sx: AsyncParsableCommand {
         let bodies = try await fetchPages(results, using: fetcher)
         let stderr = Shell.current.stderr
         for (result, body) in zip(results, bodies) where body == nil {
-            stderr.write(Data("sx: could not fetch \(result.url)\n".utf8))
+            stderr.write(Data("sx: could not fetch \(PageFetcher.redacted(result.url))\n".utf8))
         }
         return Self.renderPages(results, contents: Self.pageContents(bodies, asText: asText))
     }
@@ -319,19 +339,18 @@ public struct Sx: AsyncParsableCommand {
         let stderr = Shell.current.stderr
 
         do {
-            // Reject user-fixable bad input (missing query, non-positive --count /
-            // --page) BEFORE any filesystem/config access, so the agent always gets
-            // the usage exit code (2) rather than a config/sandbox error.
+            // Reject user-fixable bad FLAG input BEFORE any I/O — including reading
+            // stdin, which can block on an open pipe/TTY — so the agent always gets
+            // the usage exit code (2) immediately rather than hanging or hitting a
+            // config/sandbox error.
+            try validateFlags()
+
+            // Resolve the query (this may read stdin for `sx -`) and reject an empty
+            // one — done after the flag checks above so a bad flag never blocks here.
             let queryOverride = readsQueryFromStdin ? Self.readStandardInput() : nil
             guard !(queryOverride ?? query.joined(separator: " "))
                     .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw SxError(.usage, "no query given — pass search terms (e.g. sx \"swift concurrency\") or pipe them via sx -")
-            }
-            if let count = count, count < 1 {
-                throw SxError(.usage, "--count must be 1 or greater (got \(count))")
-            }
-            if let page = page, page < 1 {
-                throw SxError(.usage, "--page must be 1 or greater (got \(page))")
             }
 
             let config = try await Config.load()

@@ -100,4 +100,46 @@ import Testing
         _ = try await mockFetcher().fetch("https://example.com/path?q=1")
         #expect(captured.withLock { $0 }?.absoluteString == "https://example.com/path?q=1")
     }
+
+    @Test func throwsOnNonTextContentType() async throws {
+        // A 2xx that is clearly binary (e.g. a PDF) must not be decoded as HTML.
+        MockURLProtocol.handler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/pdf"]
+            )!
+            return (response, Data([0x25, 0x50, 0x44, 0x46]))   // "%PDF"
+        }
+        do {
+            _ = try await mockFetcher().fetch("https://example.com/file.pdf")
+            Issue.record("expected a non-text content-type to throw")
+        } catch let error as SxError {
+            #expect(error.exitCode == .general)
+        }
+    }
+
+    @Test func allowsTextContentTypeWithCharsetParameter() async throws {
+        // text/html with a charset parameter is still textual and must be returned.
+        MockURLProtocol.handler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "text/html; charset=utf-8"]
+            )!
+            return (response, Data("<html>ok</html>".utf8))
+        }
+        let body = try await mockFetcher().fetch("https://example.com")
+        #expect(body == "<html>ok</html>")
+    }
+
+    @Test func allowsResponseWithNoContentType() async throws {
+        // A missing Content-Type is allowed (the caller decides what to do).
+        MockURLProtocol.handler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil
+            )!
+            return (response, Data("plain".utf8))
+        }
+        let body = try await mockFetcher().fetch("https://example.com")
+        #expect(body == "plain")
+    }
 }

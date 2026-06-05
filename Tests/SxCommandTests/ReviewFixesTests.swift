@@ -38,4 +38,41 @@ import SwiftSx
         let registry = SearchManager.makeRegistry(from: Config())
         #expect(Set(registry.keys) == Set(SearchManager.knownEngines))
     }
+
+    // --html/--text emit raw page bodies, so combining them with --json/--clean
+    // would break the "--json is always valid JSON" contract → usage (exit 2).
+    @Test func htmlWithJsonIsUsageError() throws {
+        do {
+            try Sx.parse(["swift", "--html", "--json"]).validateFlags()
+            Issue.record("expected --html --json to throw")
+        } catch let error as SxError {
+            #expect(error.exitCode == .usage)
+        }
+    }
+
+    @Test func textWithCleanIsUsageError() throws {
+        do {
+            try Sx.parse(["swift", "--text", "--clean"]).validateFlags()
+            Issue.record("expected --text --clean to throw")
+        } catch let error as SxError {
+            #expect(error.exitCode == .usage)
+        }
+    }
+
+    @Test func contentModesWithoutJsonAreAccepted() throws {
+        // Each of these is a valid combination and must not throw.
+        try Sx.parse(["swift", "--html"]).validateFlags()
+        try Sx.parse(["swift", "--text"]).validateFlags()
+        try Sx.parse(["swift", "--json"]).validateFlags()
+        try Sx.parse(["swift", "--html", "--links"]).validateFlags()
+    }
+
+    @Test func nonPositivePageIsUsageErrorInValidateFlags() throws {
+        do {
+            try Sx.parse(["swift", "--page=0"]).validateFlags()
+            Issue.record("expected --page 0 to throw")
+        } catch let error as SxError {
+            #expect(error.exitCode == .usage)
+        }
+    }
 }
