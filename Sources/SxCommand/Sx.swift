@@ -180,7 +180,9 @@ public struct Sx: AsyncParsableCommand {
         engine: String?,
         config: Config,
         options: SearchOptions,
-        format: OutputFormat
+        format: OutputFormat,
+        html: Bool = false,
+        text: Bool = false
     ) -> String {
         var lines = ["sx dry-run — no query sent"]
         if let engine = engine {
@@ -211,7 +213,15 @@ public struct Sx: AsyncParsableCommand {
         if !options.safeSearch.isEmpty {
             lines.append("  safe-search: \(options.safeSearch)")
         }
-        lines.append("  format:     \(format.label)")
+        // --html/--text override the result-list format and fetch each result page,
+        // so report the actual content mode rather than the unrelated format label.
+        if text {
+            lines.append("  format:     text (fetch each result page → Markdown)")
+        } else if html {
+            lines.append("  format:     html (fetch each result page → raw HTML)")
+        } else {
+            lines.append("  format:     \(format.label)")
+        }
         return lines.joined(separator: "\n") + "\n"
     }
 
@@ -364,7 +374,8 @@ public struct Sx: AsyncParsableCommand {
             // making any network call — a pure, side-effect-free preview.
             if dryRun {
                 stdout.write(Data(Self.dryRunPlan(
-                    engine: engine, config: config, options: options, format: format
+                    engine: engine, config: config, options: options,
+                    format: format, html: html, text: text
                 ).utf8))
                 return
             }

@@ -800,4 +800,45 @@ import Testing
         #expect(!result.contains("Nav Chrome"))
         #expect(!result.contains("Footer Chrome"))
     }
+
+    // MARK: - Review item: literal angle brackets in prose
+
+    /// A literal `<` followed by whitespace/digits is text, not markup, so a comparison
+    /// like `2 < 3 and 4 > 1` must survive tag stripping intact.
+    @Test func literalLessThanInProseIsPreserved() {
+        let html = "<body><p>For all n, 2 < 3 and 4 > 1 holds.</p></body>"
+        let result = HTMLExtractor.extract(html)
+        #expect(result.contains("2 < 3 and 4 > 1"))
+    }
+
+    /// Real tags are still stripped even with the stricter tag-start requirement.
+    @Test func realTagsStillStrippedAlongsideLiteralLessThan() {
+        let html = "<body><p>a <span>b</span> c < d</p></body>"
+        let result = HTMLExtractor.extract(html)
+        #expect(!result.contains("<span>"))
+        #expect(result.contains("c < d"))
+    }
+
+    // MARK: - Review item: code fence sizing around embedded backticks
+
+    /// A `<pre>` block whose content contains a Markdown fence must be wrapped in a
+    /// longer fence so the embedded ``` cannot close the generated code block early.
+    @Test func preBlockWithEmbeddedFenceUsesLongerFence() {
+        let html = "<body><pre>```\ncode\n```</pre></body>"
+        let result = HTMLExtractor.extract(html)
+        // Outer fence must be at least 4 backticks (longer than the embedded run of 3).
+        #expect(result.contains("````"))
+    }
+
+    // MARK: - Review item: nested lists keep both bullets
+
+    /// A nested list must not collapse parent and child into one run. Indentation is
+    /// flattened (a best-effort-extractor limitation), but both bullets are preserved.
+    @Test func nestedListsKeepBothBullets() {
+        let html = "<body><ul><li>Parent<ul><li>Child</li></ul></li></ul></body>"
+        let result = HTMLExtractor.extract(html)
+        #expect(result.contains("Parent"))
+        #expect(result.contains("Child"))
+        #expect(!result.contains("ParentChild"))
+    }
 }

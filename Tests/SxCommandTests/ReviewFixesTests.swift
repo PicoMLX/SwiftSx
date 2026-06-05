@@ -75,4 +75,22 @@ import SwiftSx
             #expect(error.exitCode == .usage)
         }
     }
+
+    // --dry-run must report the actual content mode when --text/--html fetch pages,
+    // not the unrelated result-list format.
+    @Test func dryRunReportsTextContentMode() throws {
+        let opts = try Sx.parse(["q", "--text"]).searchOptions(from: Config())
+        let plan = Sx.dryRunPlan(
+            engine: nil, config: Config(), options: opts, format: .plain, html: false, text: true
+        )
+        #expect(plan.contains("text (fetch"))
+    }
+
+    @Test func dryRunReportsHtmlContentMode() throws {
+        let opts = try Sx.parse(["q", "--html"]).searchOptions(from: Config())
+        let plan = Sx.dryRunPlan(
+            engine: nil, config: Config(), options: opts, format: .plain, html: true, text: false
+        )
+        #expect(plan.contains("html (fetch"))
+    }
 }

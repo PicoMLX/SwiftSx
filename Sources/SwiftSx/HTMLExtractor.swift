@@ -226,9 +226,12 @@ public enum HTMLExtractor {
     nonisolated(unsafe) private static let reLinkNoHref: NSRegularExpression =
         makeREDotAll("<a(?=[\\s>])[^>]*>([\\s\\S]*?)</a>")
 
-    // Strip remaining tags
+    // Strip remaining tags.
+    // Requires a tag-name-like start (`<tag`, `</tag`, or `<!`…) so a literal `<`
+    // followed by whitespace or a digit (e.g. `2 < 3 and 4 > 1`, `<3`) is kept as
+    // text instead of being eaten as if it were markup — matching browser parsing.
     nonisolated(unsafe) private static let reAnyTag: NSRegularExpression =
-        makeRE("<[^>]+>", options: [])
+        makeRE("</?[a-zA-Z!][^>]*>", options: [])
 
     // Whitespace normalisation
     nonisolated(unsafe) private static let reHorizontalWS: NSRegularExpression =
@@ -329,7 +332,14 @@ public enum HTMLExtractor {
             // re-interpreted as tag delimiters.
             inner = decodeEntities(inner)
 
-            let fenced = "\n```\n\(inner)\n```\n"
+            // Size the fence longer than any backtick run inside the code, so an
+            // embedded ``` (e.g. a page showing a Markdown example) can't close it early.
+            var maxRun = 0, run = 0
+            for ch in inner {
+                if ch == "`" { run += 1; maxRun = max(maxRun, run) } else { run = 0 }
+            }
+            let fence = String(repeating: "`", count: max(3, maxRun + 1))
+            let fenced = "\n\(fence)\n\(inner)\n\(fence)\n"
             result = result.replacingOccurrences(of: placeholder, with: fenced)
         }
         return result
