@@ -511,4 +511,101 @@ import Testing
         // Style must not appear
         #expect(!result.contains("font-family"))
     }
+
+    // MARK: - Fix 1: Syntax-highlight tags stripped inside <pre> blocks
+
+    /// `<pre><code>` blocks containing syntax-highlight `<span>` markup must produce a fenced
+    /// code block with only the plain text content — no literal `<span …>` markup should remain.
+    /// HTML entities inside the block (e.g. `&lt;`) must still decode to their characters.
+    @Test func syntaxHighlightSpansStrippedInsidePre() {
+        // Simulates output from a syntax highlighter: <span class="k">let</span>
+        let html = #"<body><pre><code><span class="k">let</span> x = <span class="m">1</span></code></pre></body>"#
+        let result = HTMLExtractor.extract(html)
+        // Fenced code block must be present
+        #expect(result.contains("```"))
+        // Plain text must be extracted
+        #expect(result.contains("let x = 1"))
+        // No residual span markup
+        #expect(!result.contains("<span"))
+        #expect(!result.contains("</span>"))
+        // Entities inside pre still decode correctly
+        let htmlWithEntities = #"<body><pre><code><span class="k">&lt;Node&gt;</span></code></pre></body>"#
+        let result2 = HTMLExtractor.extract(htmlWithEntities)
+        #expect(result2.contains("<Node>"))
+        #expect(!result2.contains("&lt;"))
+    }
+
+    // MARK: - Fix 2: Tag-boundary lookahead accepts newlines in HTML attributes
+
+    /// Real-world HTML wraps attributes across lines, e.g. `<article\n  class="post">`.
+    /// The extractor must still recognise `<article>` as the main region and exclude nav/footer
+    /// chrome even when the opening tag spans multiple lines.
+    @Test func multilineAttributesOnContainerTagMatchesMainRegion() {
+        let html = """
+        <html>
+          <body>
+            <nav>Chrome Nav</nav>
+            <article
+              class="post"
+              id="main-article">
+              <p>Article content here.</p>
+            </article>
+            <footer>Chrome Footer</footer>
+          </body>
+        </html>
+        """
+        let result = HTMLExtractor.extract(html)
+        // Article content must be extracted
+        #expect(result.contains("Article content here"))
+        // Chrome outside the article must not appear
+        #expect(!result.contains("Chrome Nav"))
+        #expect(!result.contains("Chrome Footer"))
+    }
+
+    // MARK: - Fix 3: Opening block tags introduce a paragraph separator
+
+    /// Text immediately before an opening `<p>` tag must be separated from the paragraph
+    /// content by a blank line, not run together as a single line.
+    @Test func openingPTagSeparatesAdjacentText() {
+        let html = "<body>Intro text<p>First paragraph</p><p>Second paragraph</p></body>"
+        let result = HTMLExtractor.extract(html)
+        // All three chunks of text must appear
+        #expect(result.contains("Intro text"))
+        #expect(result.contains("First paragraph"))
+        #expect(result.contains("Second paragraph"))
+        // "Intro text" must NOT be immediately followed by "First paragraph" on the same line
+        #expect(!result.contains("Intro textFirst paragraph"))
+        // Verify they are actually on different paragraphs (separated by at least one newline)
+        let introRange = result.range(of: "Intro text")
+        let firstRange = result.range(of: "First paragraph")
+        if let ir = introRange, let fr = firstRange {
+            let between = String(result[ir.upperBound..<fr.lowerBound])
+            #expect(between.contains("\n"))
+        }
+    }
+
+    /// A `<div>` immediately after inline text must likewise introduce a separator.
+    @Test func openingDivTagSeparatesAdjacentText() {
+        let html = "<body>Lead text<div>Block content</div></body>"
+        let result = HTMLExtractor.extract(html)
+        #expect(result.contains("Lead text"))
+        #expect(result.contains("Block content"))
+        #expect(!result.contains("Lead textBlock content"))
+    }
+
+    // MARK: - Fix 4: Relaxed href attribute syntax
+
+    /// `href` with whitespace around the `=` sign must produce a Markdown link.
+    @Test func hrefWithSpacesAroundEqualsProducesMarkdownLink() {
+        let html = #"<body><a href = "https://example.com">Example</a></body>"#
+        let result = HTMLExtractor.extract(html)
+        #expect(result.contains("[Example](https://example.com)"))
+    }
+
+    /// An unquoted `href` value must produce a Markdown link.
+    @Test func unquotedHrefProducesMarkdownLink() {
+        let html = "<body><a href=https://swift.org>Swift</a></body>"
+        let result = HTMLExtractor.extract(html)
+        #expect(result.contains("[Swift](https://swift.org)"))
+    }
 }

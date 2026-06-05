@@ -83,34 +83,42 @@ public enum HTMLExtractor {
     }
 
     // Pre-block protection
+    // `(?=[\s>/])` accepts space, tab, newline, CR — any HTML whitespace before an attribute.
     nonisolated(unsafe) private static let rePreBlock: NSRegularExpression =
-        makeREDotAll("<pre(?=[ \\t>/])[^>]*>([\\s\\S]*?)</pre>")
+        makeREDotAll("<pre(?=[\\s>/])[^>]*>([\\s\\S]*?)</pre>")
 
     // Strip regions
     nonisolated(unsafe) private static let reRegionScript: NSRegularExpression =
-        makeREDotAll("<script(?=[ \\t>/])[^>]*>[\\s\\S]*?</script>")
+        makeREDotAll("<script(?=[\\s>/])[^>]*>[\\s\\S]*?</script>")
     nonisolated(unsafe) private static let reRegionStyle: NSRegularExpression =
-        makeREDotAll("<style(?=[ \\t>/])[^>]*>[\\s\\S]*?</style>")
+        makeREDotAll("<style(?=[\\s>/])[^>]*>[\\s\\S]*?</style>")
     nonisolated(unsafe) private static let reRegionHead: NSRegularExpression =
-        makeREDotAll("<head(?=[ \\t>/])[^>]*>[\\s\\S]*?</head>")
+        makeREDotAll("<head(?=[\\s>/])[^>]*>[\\s\\S]*?</head>")
     nonisolated(unsafe) private static let reRegionNoscript: NSRegularExpression =
-        makeREDotAll("<noscript(?=[ \\t>/])[^>]*>[\\s\\S]*?</noscript>")
+        makeREDotAll("<noscript(?=[\\s>/])[^>]*>[\\s\\S]*?</noscript>")
     nonisolated(unsafe) private static let reRegionSvg: NSRegularExpression =
-        makeREDotAll("<svg(?=[ \\t>/])[^>]*>[\\s\\S]*?</svg>")
+        makeREDotAll("<svg(?=[\\s>/])[^>]*>[\\s\\S]*?</svg>")
     nonisolated(unsafe) private static let reHtmlComment: NSRegularExpression =
         makeREDotAll("<!--[\\s\\S]*?-->")
 
     // Main-region extraction
+    // `(?=[\s>/])` handles attributes that wrap across lines, e.g. `<article\n  class="post">`.
     nonisolated(unsafe) private static let reInnerArticle: NSRegularExpression =
-        makeREDotAll("<article(?=[ \\t>/])[^>]*>([\\s\\S]*?)</article>")
+        makeREDotAll("<article(?=[\\s>/])[^>]*>([\\s\\S]*?)</article>")
     nonisolated(unsafe) private static let reInnerMain: NSRegularExpression =
-        makeREDotAll("<main(?=[ \\t>/])[^>]*>([\\s\\S]*?)</main>")
+        makeREDotAll("<main(?=[\\s>/])[^>]*>([\\s\\S]*?)</main>")
     nonisolated(unsafe) private static let reInnerBody: NSRegularExpression =
-        makeREDotAll("<body(?=[ \\t>/])[^>]*>([\\s\\S]*?)</body>")
+        makeREDotAll("<body(?=[\\s>/])[^>]*>([\\s\\S]*?)</body>")
 
     // <br> → newline
     nonisolated(unsafe) private static let reBr: NSRegularExpression =
         makeRE("<br\\s*/?>")
+
+    // Opening block tags → blank line separator (single combined pass).
+    // `(?=[\s>/])` keeps the tag-boundary guard so e.g. `<paragraph>` is not matched.
+    // `<li>` is intentionally excluded because `reLi` handles the full `<li>…</li>` block.
+    nonisolated(unsafe) private static let reBlockOpeners: NSRegularExpression =
+        makeRE("<(p|div|section|article|main|header|footer|nav|ul|ol)(?=[\\s>/])[^>]*>")
 
     // Closing block tags → blank line (combined single pass)
     nonisolated(unsafe) private static let reBlockClosers: NSRegularExpression =
@@ -118,46 +126,56 @@ public enum HTMLExtractor {
 
     // Blockquote
     nonisolated(unsafe) private static let reBlockquote: NSRegularExpression =
-        makeREDotAll("<blockquote(?=[ \\t>/])[^>]*>([\\s\\S]*?)</blockquote>")
+        makeREDotAll("<blockquote(?=[\\s>/])[^>]*>([\\s\\S]*?)</blockquote>")
 
     // List items
     nonisolated(unsafe) private static let reLi: NSRegularExpression =
-        makeREDotAll("<li(?=[ \\t>/])[^>]*>([\\s\\S]*?)</li>")
+        makeREDotAll("<li(?=[\\s>/])[^>]*>([\\s\\S]*?)</li>")
 
-    // Headings: (regex, marker) pairs — built once
+    // Headings: (regex, marker) pairs — built once.
+    // `(?=[\s>])` handles newlines in attributes while still rejecting e.g. `<h10>`
+    // (the digit `0` is not in `[\s>]`).
     nonisolated(unsafe) private static let headingPatterns: [(open: NSRegularExpression, close: NSRegularExpression, marker: String)] = {
         let defs: [(String, String)] = [
             ("h1", "#"), ("h2", "##"), ("h3", "###"),
             ("h4", "####"), ("h5", "#####"), ("h6", "######"),
         ]
         return defs.map { tag, marker in
-            let open  = makeRE("<\(tag)(?=[ \\t>])[^>]*>")
+            let open  = makeRE("<\(tag)(?=[\\s>])[^>]*>")
             let close = makeRE("</\(tag)>")
             return (open, close, marker)
         }
     }()
 
     // Inline bold / italic / code / links
+    // `(?=[\s>])` covers multi-line opening tags.
     nonisolated(unsafe) private static let reBold: [(NSRegularExpression)] = {
         ["strong", "b"].map { tag in
-            makeREDotAll("<\(tag)(?=[ \\t>])[^>]*>([\\s\\S]*?)</\(tag)>")
+            makeREDotAll("<\(tag)(?=[\\s>])[^>]*>([\\s\\S]*?)</\(tag)>")
         }
     }()
 
     nonisolated(unsafe) private static let reItalic: [(NSRegularExpression)] = {
         ["em", "i"].map { tag in
-            makeREDotAll("<\(tag)(?=[ \\t>])[^>]*>([\\s\\S]*?)</\(tag)>")
+            makeREDotAll("<\(tag)(?=[\\s>])[^>]*>([\\s\\S]*?)</\(tag)>")
         }
     }()
 
     nonisolated(unsafe) private static let reInlineCode: NSRegularExpression =
-        makeREDotAll("<code(?=[ \\t>/])[^>]*>([\\s\\S]*?)</code>")
+        makeREDotAll("<code(?=[\\s>/])[^>]*>([\\s\\S]*?)</code>")
 
+    // Link with href — supports:
+    //   href="url"     (double-quoted)  → capture group 1
+    //   href='url'     (single-quoted)  → capture group 2
+    //   href=url       (unquoted)       → capture group 3
+    //   href = "url"   (spaces around =) — handled by \s* between href, = and value
+    // Link text is capture group 4.
+    // `(?=[\s>])` on the opening <a …> tag boundary.
     nonisolated(unsafe) private static let reLinkWithHref: NSRegularExpression =
-        makeREDotAll("<a(?=[ \\t>])[^>]+href=[\"']([^\"']*)[\"'][^>]*>([\\s\\S]*?)</a>")
+        makeREDotAll("<a(?=[\\s>])[^>]+href\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))[^>]*>([\\s\\S]*?)</a>")
 
     nonisolated(unsafe) private static let reLinkNoHref: NSRegularExpression =
-        makeREDotAll("<a(?=[ \\t>])[^>]*>([\\s\\S]*?)</a>")
+        makeREDotAll("<a(?=[\\s>])[^>]*>([\\s\\S]*?)</a>")
 
     // Strip remaining tags
     nonisolated(unsafe) private static let reAnyTag: NSRegularExpression =
@@ -228,8 +246,10 @@ public enum HTMLExtractor {
     }
 
     /// Restores placeholder tokens inserted by `protectPreBlocks(_:captured:)` as fenced
-    /// code blocks.  The inner content has its `<code>` wrapper stripped and HTML entities
-    /// decoded, but whitespace is preserved verbatim.
+    /// code blocks.  The inner content has its `<code>` wrapper stripped, then all remaining
+    /// HTML tags (e.g. syntax-highlight `<span>` markup) stripped, and finally HTML entities
+    /// decoded — so escaped code literals (`&lt;`, `&amp;`) decode correctly. Whitespace is
+    /// preserved verbatim (the whitespace-collapse pass never sees this content).
     ///
     /// - Parameters:
     ///   - s: The processed string still containing placeholder tokens.
@@ -240,14 +260,24 @@ public enum HTMLExtractor {
         for (i, rawInner) in captured.enumerated() {
             let placeholder = "\u{E000}SXPRE\(i)\u{E000}"
 
-            // Strip any <code>…</code> wrapper tags (but keep their text content).
+            // Step A: Strip any <code>…</code> wrapper tags (but keep their text content).
             var inner = reInnerCodeTag.stringByReplacingMatches(
                 in: rawInner,
                 range: NSRange(rawInner.startIndex..., in: rawInner),
                 withTemplate: ""
             )
 
-            // Decode HTML entities inside the code block.
+            // Step B: Strip all remaining HTML tags (e.g. syntax-highlight <span> markup).
+            // This removes <span class="k"> etc. while leaving the text content intact.
+            inner = reAnyTag.stringByReplacingMatches(
+                in: inner,
+                range: NSRange(inner.startIndex..., in: inner),
+                withTemplate: ""
+            )
+
+            // Step C: Decode HTML entities so that e.g. &lt; becomes < in the fenced block.
+            // This runs AFTER tag-stripping so that entity-encoded angle brackets are not
+            // re-interpreted as tag delimiters.
             inner = decodeEntities(inner)
 
             let fenced = "\n```\n\(inner)\n```\n"
@@ -261,7 +291,7 @@ public enum HTMLExtractor {
     /// Strips non-content regions entirely (tag + inner content).
     ///
     /// Removes: `<script>`, `<style>`, `<head>`, `<noscript>`, `<svg>`, and HTML comments.
-    /// Each opening-tag pattern uses a lookahead `(?=[ \t>/])` so that e.g. `<head…>` does
+    /// Each opening-tag pattern uses a lookahead `(?=[\s>/])` so that e.g. `<head…>` does
     /// NOT match `<header>`.
     private static func stripRegions(_ s: String) -> String {
         var result = s
@@ -304,7 +334,12 @@ public enum HTMLExtractor {
 
     // MARK: - Block-tag conversion (pre-blockquote: <br> and paragraph tags only)
 
-    /// Converts `<br>` and closing paragraph/block tags to newlines.
+    /// Converts `<br>` tags, opening block tags, and closing paragraph/block tags to newlines.
+    ///
+    /// Opening block tags (`<p>`, `<div>`, `<section>`, etc.) insert a blank-line separator
+    /// *before* the tag's content, mirroring the blank line that closing tags already insert
+    /// *after* it.  This ensures that `Intro<p>First paragraph</p>` produces separate
+    /// paragraphs rather than running together.
     ///
     /// This pass runs BEFORE blockquote conversion so that multi-paragraph blockquote
     /// inner content is already split into lines when each line is prefixed with `> `.
@@ -316,6 +351,13 @@ public enum HTMLExtractor {
             in: result,
             range: NSRange(result.startIndex..., in: result),
             withTemplate: "\n"
+        )
+
+        // Opening block tags → blank line separator before content
+        result = reBlockOpeners.stringByReplacingMatches(
+            in: result,
+            range: NSRange(result.startIndex..., in: result),
+            withTemplate: "\n\n"
         )
 
         // Closing block tags → blank line (single combined pass)
@@ -446,6 +488,15 @@ public enum HTMLExtractor {
 
     /// Converts `<a href="…">TEXT</a>` to `[TEXT](URL)` Markdown link syntax.
     ///
+    /// Accepts double-quoted, single-quoted, and unquoted `href` values, with optional
+    /// whitespace around the `=` sign (e.g. `href = "url"` and `href=url` are both valid).
+    ///
+    /// Capture groups in `reLinkWithHref`:
+    /// - Group 1: double-quoted URL
+    /// - Group 2: single-quoted URL
+    /// - Group 3: unquoted URL
+    /// - Group 4: link text
+    ///
     /// Falls back to plain TEXT when no `href` attribute is present.
     private static func convertLinks(_ s: String) -> String {
         let nsString = s as NSString
@@ -459,15 +510,22 @@ public enum HTMLExtractor {
             guard let matchRange = Range(match.range, in: s) else { continue }
             result += s[lastEnd..<matchRange.lowerBound]
 
-            let url: String
-            if match.numberOfRanges > 1, let urlRange = Range(match.range(at: 1), in: s) {
-                url = String(s[urlRange])
-            } else {
-                url = ""
-            }
+            // URL: whichever of groups 1 (double-quoted), 2 (single-quoted), 3 (unquoted) matched.
+            let url: String = {
+                for groupIndex in 1...3 {
+                    if match.numberOfRanges > groupIndex {
+                        let r = match.range(at: groupIndex)
+                        if r.location != NSNotFound, let range = Range(r, in: s) {
+                            return String(s[range])
+                        }
+                    }
+                }
+                return ""
+            }()
 
+            // Text is capture group 4.
             let text: String
-            if match.numberOfRanges > 2, let textRange = Range(match.range(at: 2), in: s) {
+            if match.numberOfRanges > 4, let textRange = Range(match.range(at: 4), in: s) {
                 text = String(s[textRange])
             } else {
                 text = ""
