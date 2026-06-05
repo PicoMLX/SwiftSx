@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking   // HTTPURLResponse lives here on Linux
+#endif
 import HTTPTypes
 import Testing
 @testable import SwiftSx
