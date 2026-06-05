@@ -237,6 +237,10 @@ public struct Sx: AsyncParsableCommand {
                     } catch is CancellationError {
                         throw CancellationError()
                     } catch {
+                        // Defence in depth: surface cancellation even if it
+                        // arrived as a transport error (PageFetcher already maps
+                        // URLError.cancelled → CancellationError).
+                        if Task.isCancelled { throw CancellationError() }
                         return (index, nil)      // skip a single unreachable page
                     }
                 }
