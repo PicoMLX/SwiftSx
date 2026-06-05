@@ -47,6 +47,9 @@ import Testing
         #expect(PageFetcher.redacted("https://user:pass@example.com/path?token=secret")
                 == "https://example.com/path")
         #expect(PageFetcher.redacted("https://example.com/a/b") == "https://example.com/a/b")
+        // Host-less / unparseable input still drops anything after ? or #.
+        #expect(PageFetcher.redacted("https://?token=secret") == "https://")
+        #expect(PageFetcher.redacted("notaurl?token=secret") == "notaurl")
     }
 }
 

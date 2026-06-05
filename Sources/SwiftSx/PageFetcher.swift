@@ -53,12 +53,17 @@ public struct PageFetcher: Sendable {
     /// A secret-free description of a URL for diagnostics: `scheme://host/path`
     /// only, dropping any userinfo and query string (which can carry tokens).
     static func redacted(_ urlString: String) -> String {
-        guard let components = URLComponents(string: urlString),
-              let host = components.host, !host.isEmpty else {
-            return urlString
+        if let components = URLComponents(string: urlString),
+           let host = components.host, !host.isEmpty {
+            let scheme = components.scheme.map { "\($0)://" } ?? ""
+            return "\(scheme)\(host)\(components.path)"
         }
-        let scheme = components.scheme.map { "\($0)://" } ?? ""
-        return "\(scheme)\(host)\(components.path)"
+        // Unparseable or host-less input (e.g. "https://?token=secret"): still
+        // drop anything after the first '?' or '#' so a query/fragment can't leak.
+        if let cut = urlString.firstIndex(where: { $0 == "?" || $0 == "#" }) {
+            return String(urlString[..<cut])
+        }
+        return urlString
     }
 
     // MARK: - Request building
