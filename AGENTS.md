@@ -139,27 +139,37 @@ ordered `fallback_engines` chain (or one-shot via `--engine`):
 ```bash
 swift build
 swift test
-swift run sx "swift concurrency"        # once wired up
+swift run sx "swift concurrency"        # search the web
+echo "swift concurrency" | swift run sx -   # query via stdin
 ```
 
 CI (`.github/workflows/swift.yml`) builds + tests on macOS (Xcode 26.4.1 /
-Swift 6.3) and Linux (`swift:6.3-noble`) on every push and PR into `main`.
+Swift 6.3) and Linux (`swift:6.3-noble`) on every push and PR into `main` and
+the `claude/**` development branches (so each stacked PR is gated before merge).
 
 ## PR roadmap
 
 Small, stacked PRs, each green on CI:
 
-1. **Package skeleton + this AGENTS.md + core models + `--version`/`--help`** ← you are here
-2. Config model + TOML loading (sandboxed) + env-var key overrides
-3. Backend protocol + manager (primary→fallback) + error→exit-code + HTTP/mock harness
-4. SearXNG backend (single + multi-instance strategies)
-5. Brave + Tavily backends
-6. Exa (API + MCP) + Jina backends
-7. History (sandboxed) + `history` / `history clear`
-8. Output rendering: JSON / `--clean` / links-only / plain + categories
-9. Wire the root command end-to-end (flags → manager → output, stdin, `--output`, `--dry-run`)
-10. `completion` subcommand
-11. (later) `--text` extraction · (later) `--html`
+1. ✅ Package skeleton + this AGENTS.md + core models + `--version`/`--help`
+2. ✅ Config model + TOML loading (sandboxed) + env-var key overrides
+3. ✅ Backend protocol + manager (primary→fallback) + error→exit-code + HTTP/mock harness
+4. ✅ SearXNG backend (single + multi-instance strategies)
+5. ✅ Brave + Tavily backends
+6. ✅ Exa (API + MCP) + Jina backends
+7. ✅ History (sandboxed) + `history` / `history clear`
+8. ✅ Output rendering: JSON / `--clean` / links-only / plain + categories
+9. ✅ `SearchManager.make(from:)` + `Config.baseSearchOptions()` builders
+10. ✅ Root error→exit-code mapping (ArgumentParser parse failures → usage `2`)
+11. ✅ End-to-end command (`sx "query"`: flags → manager → render → output) + history + `--dry-run` + `--fail-empty`
+12. ✅ Query-tuning flags (`--site` / `--time-range` / `--page` / `--safe-search` / `--category` / `--language`)
+13. ✅ `-o/--output` (sandboxed file) · ✅ stdin (`sx -`) · ✅ `--first` (top result only)
+14. Shell completion is provided by ArgumentParser itself
+    (`sx --generate-completion-script <shell>`) — no custom subcommand needed.
+15. (later) `--text` extraction · (later) `--html` raw fetch
+
+Deferred hardening (tracked, not yet scheduled): cross-process history-file
+locking; `no_verify_ssl`; surfacing Tavily's `answer` field.
 
 ## SwiftBash consumption
 
