@@ -50,6 +50,18 @@ import Testing
         // Host-less / unparseable input still drops anything after ? or #.
         #expect(PageFetcher.redacted("https://?token=secret") == "https://")
         #expect(PageFetcher.redacted("notaurl?token=secret") == "notaurl")
+        // Host-less input with userinfo must not leak credentials either.
+        #expect(PageFetcher.redacted("https://user:secret@") == "https://")
+        #expect(PageFetcher.redacted("https://user:secret@:80") == "https://:80")
+    }
+
+    @Test func noNetworkURLErrorsAreClassified() {
+        // No-network / infrastructure codes → exit 7 (escalate); others do not.
+        #expect(PageFetcher.isNoNetwork(.notConnectedToInternet))
+        #expect(PageFetcher.isNoNetwork(.timedOut))
+        #expect(PageFetcher.isNoNetwork(.cannotConnectToHost))
+        #expect(!PageFetcher.isNoNetwork(.badServerResponse))
+        #expect(!PageFetcher.isNoNetwork(.unsupportedURL))
     }
 }
 

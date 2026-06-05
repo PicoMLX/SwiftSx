@@ -77,12 +77,31 @@ public struct PageFetcher: Sendable {
             let scheme = components.scheme.map { "\($0)://" } ?? ""
             return "\(scheme)\(host)\(components.path)"
         }
-        // Unparseable or host-less input (e.g. "https://?token=secret"): still
-        // drop anything after the first '?' or '#' so a query/fragment can't leak.
-        if let cut = urlString.firstIndex(where: { $0 == "?" || $0 == "#" }) {
-            return String(urlString[..<cut])
+        // Unparseable or host-less input (e.g. "https://?token=secret" or
+        // "https://user:secret@"): strip userinfo (…@) and anything from the first
+        // '?'/'#', so credentials or a query/fragment can't leak into diagnostics.
+        var safe = urlString
+        if let at = safe.firstIndex(of: "@") {
+            let afterScheme = safe.range(of: "://")?.upperBound ?? safe.startIndex
+            safe.removeSubrange((afterScheme <= at ? afterScheme : safe.startIndex)...at)
         }
-        return urlString
+        if let cut = safe.firstIndex(where: { $0 == "?" || $0 == "#" }) {
+            safe = String(safe[..<cut])
+        }
+        return safe
+    }
+
+    /// `true` for `URLError` codes that indicate a no-network / infrastructure
+    /// failure (mapped to exit 7 so the agent escalates) rather than a per-page
+    /// error worth reporting as a generic failure.
+    static func isNoNetwork(_ code: URLError.Code) -> Bool {
+        switch code {
+        case .notConnectedToInternet, .timedOut, .cannotFindHost,
+             .cannotConnectToHost, .networkConnectionLost, .dnsLookupFailed:
+            return true
+        default:
+            return false
+        }
     }
 
     // MARK: - Request building
@@ -134,6 +153,10 @@ public struct PageFetcher: Sendable {
             throw CancellationError()
         } catch let urlError as URLError where urlError.code == .cancelled {
             throw CancellationError()    // URLSession reports cancellation this way
+        } catch let urlError as URLError where Self.isNoNetwork(urlError.code) {
+            // No-network / infrastructure failure → exit 7, so the agent escalates
+            // (check connectivity) instead of retrying the same command.
+            throw SxError(.auth, "could not fetch \(Self.redacted(urlString)): \(urlError.localizedDescription)")
         } catch {
             throw SxError(.general, "could not fetch \(Self.redacted(urlString)): \(error)")
         }
