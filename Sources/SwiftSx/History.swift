@@ -286,18 +286,30 @@ public enum History {
     /// - Returns: The open file descriptor to pass to ``releaseLock(_:)``, or `-1`
     ///   if the file could not be opened (the caller then proceeds without a lock).
     static func acquireExclusiveLock(_ url: URL) -> Int32 {
+        #if canImport(Glibc) || canImport(Darwin)
         let fd = open(url.path, O_RDWR | O_CREAT, 0o644)
         guard fd >= 0 else { return -1 }
-        flock(fd, LOCK_EX)
+        // If the lock itself fails (interrupted, or a filesystem that doesn't
+        // support advisory locking), don't pretend we hold it — close and report
+        // failure so the caller falls back to a best-effort unlocked write.
+        if flock(fd, LOCK_EX) != 0 {
+            close(fd)
+            return -1
+        }
         return fd
+        #else
+        return -1   // non-POSIX platform: no advisory locking available
+        #endif
     }
 
     /// Releases the advisory lock held on `fd` and closes it. A negative `fd`
     /// (no lock was acquired) is a no-op.
     static func releaseLock(_ fd: Int32) {
+        #if canImport(Glibc) || canImport(Darwin)
         guard fd >= 0 else { return }
         flock(fd, LOCK_UN)
         close(fd)
+        #endif
     }
 
     // MARK: Read
