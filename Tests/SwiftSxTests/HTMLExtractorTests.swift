@@ -66,6 +66,28 @@ import Testing
         #expect(result.contains("Keep"))
     }
 
+    // MARK: - Tag-prefix collision fix (Issue 1)
+
+    /// `<head…>…</head>` must be stripped but `<header>…</header>` content must NOT be stripped.
+    @Test func headTagStrippedButHeaderContentPreserved() {
+        let html = "<html><head><title>Meta</title></head><body><header><p>Site Header Content</p></header><p>Body</p></body></html>"
+        let result = HTMLExtractor.extract(html)
+        #expect(!result.contains("Meta"))
+        #expect(result.contains("Site Header Content"))
+        #expect(result.contains("Body"))
+    }
+
+    /// `<main…>…</main>` should be found as the main region, but a `<main-content>` custom
+    /// element must not match the `<main>` extractor.
+    @Test func mainTagDoesNotMatchMainContentCustomElement() {
+        // No <article> or <main> present — falls back to <body>.
+        let html = "<body><main-content><p>Custom</p></main-content><p>Normal</p></body>"
+        let result = HTMLExtractor.extract(html)
+        // The body fallback should surface "Normal"; "Custom" may also appear.
+        // The key assertion: we don't accidentally strip <main-content> while looking for <main>.
+        #expect(result.contains("Normal"))
+    }
+
     // MARK: - Main region selection
 
     @Test func articleContentIsPreferredOverSurroundingChrome() {
@@ -225,17 +247,58 @@ import Testing
         #expect(result.contains("`print()`"))
     }
 
+    // MARK: - Pre / code-block fidelity (Issue 2)
+
     @Test func preConvertsToFencedCodeBlock() {
         let html = "<body><pre>let x = 1\nlet y = 2</pre></body>"
         let result = HTMLExtractor.extract(html)
         #expect(result.contains("```"))
         #expect(result.contains("let x = 1"))
+        #expect(result.contains("let y = 2"))
     }
+
+    /// Internal indentation inside `<pre>` must be preserved verbatim.
+    @Test func prePreservesInternalIndentation() {
+        let html = "<body><pre>  indented\n    more indented</pre></body>"
+        let result = HTMLExtractor.extract(html)
+        #expect(result.contains("  indented"))
+        #expect(result.contains("    more indented"))
+    }
+
+    /// `<pre><code>…</code></pre>` must produce a clean fenced block, not inline backticks
+    /// wrapped inside the fence.
+    @Test func preCodeDoesNotProduceInnerBackticks() {
+        let html = "<body><pre><code>let x = 1</code></pre></body>"
+        let result = HTMLExtractor.extract(html)
+        // Should contain a fenced block with the raw source
+        #expect(result.contains("```"))
+        #expect(result.contains("let x = 1"))
+        // The inner content must NOT be wrapped in inline backticks inside the fence
+        #expect(!result.contains("`let x = 1`"))
+    }
+
+    /// Inline `<code>` in regular text must still produce backticks.
+    @Test func inlineCodeOutsidePreStillUsesBackticks() {
+        let html = "<body><p>Call <code>foo()</code> here.</p><pre>bar()</pre></body>"
+        let result = HTMLExtractor.extract(html)
+        #expect(result.contains("`foo()`"))
+        #expect(result.contains("bar()"))
+    }
+
+    // MARK: - Blockquote (Issue 4)
 
     @Test func blockquoteLinesPrefixedWithAngle() {
         let html = "<body><blockquote>Quoted text here.</blockquote></body>"
         let result = HTMLExtractor.extract(html)
         #expect(result.contains("> Quoted text here."))
+    }
+
+    /// A multi-paragraph blockquote must have BOTH paragraphs prefixed with `> `.
+    @Test func multiParagraphBlockquotePrefixesBothParagraphs() {
+        let html = "<body><blockquote><p>One</p><p>Two</p></blockquote></body>"
+        let result = HTMLExtractor.extract(html)
+        #expect(result.contains("> One"))
+        #expect(result.contains("> Two"))
     }
 
     @Test func brConvertsToNewline() {
