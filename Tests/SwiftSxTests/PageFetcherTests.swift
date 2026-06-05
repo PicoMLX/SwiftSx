@@ -33,6 +33,21 @@ import Testing
             }
         }
     }
+
+    @Test func rejectsEmptyHost() {
+        // Foundation parses these with an empty host; an agent branches on exit 2.
+        for bad in ["http://:80", "http://user@:80", "https://"] {
+            #expect(throws: SxError.self) {
+                try fetcher.makeRequest(bad)
+            }
+        }
+    }
+
+    @Test func redactedDropsUserinfoAndQuery() {
+        #expect(PageFetcher.redacted("https://user:pass@example.com/path?token=secret")
+                == "https://example.com/path")
+        #expect(PageFetcher.redacted("https://example.com/a/b") == "https://example.com/a/b")
+    }
 }
 
 // MARK: - Fetch (mocked transport)
