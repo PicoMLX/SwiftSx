@@ -1,5 +1,10 @@
 import Foundation
 import ShellKit
+#if canImport(Glibc)
+import Glibc        // open / flock / close on Linux
+#elseif canImport(Darwin)
+import Darwin       // open / flock / close on macOS
+#endif
 
 /// A single recorded search-history entry.
 public struct HistoryEntry: Sendable, Equatable {
@@ -211,6 +216,15 @@ public enum History {
             throw SxError(.general, "cannot create history directory at \(dir.path): \(error)")
         }
 
+        // Serialise concurrent `sx` processes writing the same history file:
+        // hold an exclusive advisory lock (flock) on it across the whole
+        // read-modify-write below, so two invocations finishing at once can't
+        // interleave a stale-offset write or trim from an incomplete read.
+        // Best-effort — if the lock can't be taken we still record the entry
+        // rather than failing an otherwise-successful search.
+        let lockFD = acquireExclusiveLock(url)
+        defer { releaseLock(lockFD) }
+
         // Build the new line for this entry.
         let entry = HistoryEntry(timestamp: Date(), query: trimmedQuery)
         let newLine = formatLine(entry)
@@ -262,6 +276,28 @@ public enum History {
                 }
             }
         }
+    }
+
+    // MARK: Advisory locking
+
+    /// Opens the file at `url` (creating it if absent) and acquires an exclusive
+    /// advisory `flock` on it.
+    ///
+    /// - Returns: The open file descriptor to pass to ``releaseLock(_:)``, or `-1`
+    ///   if the file could not be opened (the caller then proceeds without a lock).
+    static func acquireExclusiveLock(_ url: URL) -> Int32 {
+        let fd = open(url.path, O_RDWR | O_CREAT, 0o644)
+        guard fd >= 0 else { return -1 }
+        flock(fd, LOCK_EX)
+        return fd
+    }
+
+    /// Releases the advisory lock held on `fd` and closes it. A negative `fd`
+    /// (no lock was acquired) is a no-op.
+    static func releaseLock(_ fd: Int32) {
+        guard fd >= 0 else { return }
+        flock(fd, LOCK_UN)
+        close(fd)
     }
 
     // MARK: Read
