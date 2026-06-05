@@ -85,6 +85,9 @@ public struct Sx: AsyncParsableCommand {
     @Flag(name: .long, help: "Show the full URL beneath each result (plain output).")
     public var expand: Bool = false
 
+    @Flag(name: .long, help: "Return only the top result.")
+    public var first: Bool = false
+
     // MARK: Behaviour
 
     @Flag(name: .customLong("dry-run"),
@@ -180,6 +183,11 @@ public struct Sx: AsyncParsableCommand {
         return lines.joined(separator: "\n") + "\n"
     }
 
+    /// Applies `--first`: keeps only the top result when set, otherwise all.
+    func selectedResults(_ results: [SearchResult]) -> [SearchResult] {
+        first ? Array(results.prefix(1)) : results
+    }
+
     // MARK: - Output
 
     /// Writes the rendered results to the `--output` file (gated through the
@@ -253,19 +261,20 @@ public struct Sx: AsyncParsableCommand {
                 outcome = try await manager.search(options)
             }
 
-            // Render the data to stdout.
+            // Apply --first (top result only), then render the data.
+            let results = selectedResults(outcome.results)
             let rendered: String
             switch format {
             case .json(let clean):
                 rendered = try ResultRenderer.renderJSON(
-                    query: options.query, results: outcome.results, clean: clean
+                    query: options.query, results: results, clean: clean
                 )
             case .links:
-                rendered = ResultRenderer.renderLinks(outcome.results)
+                rendered = ResultRenderer.renderLinks(results)
             case .plain:
                 // Colour is suppressed by --no-color or the config's no_color.
                 rendered = ResultRenderer.renderPlain(
-                    query: options.query, results: outcome.results,
+                    query: options.query, results: results,
                     expand: expand, noColor: noColor || config.noColor
                 )
             }
@@ -281,7 +290,7 @@ public struct Sx: AsyncParsableCommand {
 
             // --fail-empty: signal "no results" with a distinct exit code, after
             // emitting the (valid, possibly empty) output above.
-            if failEmpty && outcome.results.isEmpty {
+            if failEmpty && results.isEmpty {
                 stderr.write(Data("sx: no results for query: \(options.query)\n".utf8))
                 throw ExitCode(SxExitCode.empty.rawValue)
             }
