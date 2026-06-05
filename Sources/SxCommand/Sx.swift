@@ -319,12 +319,19 @@ public struct Sx: AsyncParsableCommand {
         let stderr = Shell.current.stderr
 
         do {
-            // Reject a missing query BEFORE any filesystem/config access so the
-            // agent gets the usage exit code (2), not a config/sandbox error.
+            // Reject user-fixable bad input (missing query, non-positive --count /
+            // --page) BEFORE any filesystem/config access, so the agent always gets
+            // the usage exit code (2) rather than a config/sandbox error.
             let queryOverride = readsQueryFromStdin ? Self.readStandardInput() : nil
             guard !(queryOverride ?? query.joined(separator: " "))
                     .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw SxError(.usage, "no query given — pass search terms (e.g. sx \"swift concurrency\") or pipe them via sx -")
+            }
+            if let count = count, count < 1 {
+                throw SxError(.usage, "--count must be 1 or greater (got \(count))")
+            }
+            if let page = page, page < 1 {
+                throw SxError(.usage, "--page must be 1 or greater (got \(page))")
             }
 
             let config = try await Config.load()
