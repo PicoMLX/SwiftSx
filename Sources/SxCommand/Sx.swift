@@ -192,7 +192,7 @@ public struct Sx: AsyncParsableCommand {
             throw SxError(.refused, "cannot write output to \(output): \(error)")
         }
         do {
-            try data.write(to: url)
+            try data.write(to: url, options: .atomic)
         } catch {
             throw SxError(.general, "cannot write output file at \(output): \(error)")
         }
