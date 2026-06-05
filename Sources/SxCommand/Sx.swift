@@ -71,6 +71,12 @@ public struct Sx: AsyncParsableCommand {
     @Option(name: [.customShort("l"), .long], help: "Language/locale code, e.g. en-US.")
     public var language: String?
 
+    // MARK: Output destination
+
+    @Option(name: [.customShort("o"), .long],
+            help: "Write results to a file (via the sandbox) instead of stdout.")
+    public var output: String?
+
     // MARK: Plain-output UX
 
     @Flag(name: .customLong("no-color"), help: "Disable ANSI colour in plain output.")
@@ -165,6 +171,34 @@ public struct Sx: AsyncParsableCommand {
         return lines.joined(separator: "\n") + "\n"
     }
 
+    // MARK: - Output
+
+    /// Writes the rendered results to the `--output` file (gated through the
+    /// ShellKit sandbox) or, by default, to stdout. A successful file write is
+    /// confirmed on stderr so the caller knows the data did not go to stdout.
+    ///
+    /// - Throws: ``SxError`` with code `.refused` when the sandbox denies access,
+    ///   or `.general` when the file write fails.
+    func emitResults(_ text: String) async throws {
+        let data = Data(text.utf8)
+        guard let output = output else {
+            Shell.current.stdout.write(data)
+            return
+        }
+        let url = Shell.resolve(output)
+        do {
+            try await Shell.authorize(url)
+        } catch {
+            throw SxError(.refused, "cannot write output to \(output): \(error)")
+        }
+        do {
+            try data.write(to: url)
+        } catch {
+            throw SxError(.general, "cannot write output file at \(output): \(error)")
+        }
+        Shell.current.stderr.write(Data("sx: wrote results to \(output)\n".utf8))
+    }
+
     // MARK: - Run
 
     public func run() async throws {
@@ -214,7 +248,7 @@ public struct Sx: AsyncParsableCommand {
                     expand: expand, noColor: noColor || config.noColor
                 )
             }
-            stdout.write(Data(rendered.utf8))
+            try await emitResults(rendered)
 
             // Record history. Non-fatal: the search already succeeded and its
             // output was written, so a history failure is a note, not an error.
