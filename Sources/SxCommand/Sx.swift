@@ -230,6 +230,22 @@ public struct Sx: AsyncParsableCommand {
         first ? Array(results.prefix(1)) : results
     }
 
+    /// Final shaping before rendering: drop URL-less results in URL-dependent modes
+    /// (`--links`/`--html`/`--text`), enforce `--count`, then apply `--first`.
+    ///
+    /// The `--count` cap runs *after* the URL filter — deliberately not in the backend
+    /// — so a URL-less Tavily answer stub only consumes a slot in the modes that
+    /// actually render it. In URL modes the stub is already filtered out, so the cap
+    /// can never drop the last usable result to make room for an answer that wouldn't
+    /// be shown (`--count 1 --links` with an answer present still returns the result).
+    func shapedResults(_ results: [SearchResult], needsURL: Bool, count: Int) -> [SearchResult] {
+        var base = needsURL ? results.filter { !$0.url.isEmpty } : results
+        if count > 0, base.count > count {
+            base = Array(base.prefix(count))
+        }
+        return selectedResults(base)
+    }
+
     // MARK: - Output
 
     /// Writes the rendered results to the `--output` file (gated through the
@@ -396,11 +412,10 @@ public struct Sx: AsyncParsableCommand {
                 outcome = try await manager.search(options)
             }
 
-            // Drop URL-less results (e.g. a Tavily answer stub) in modes that need a
-            // URL — before --first — so they keep the top *usable* result.
+            // Shape the result set for rendering: drop URL-less results in URL modes,
+            // enforce --count, then apply --first. Order matters — see shapedResults.
             let needsURL = html || text || format == .links
-            let base = needsURL ? outcome.results.filter { !$0.url.isEmpty } : outcome.results
-            let results = selectedResults(base)
+            let results = shapedResults(outcome.results, needsURL: needsURL, count: options.numResults)
             let rendered: String
             if html || text {
                 // Content mode: fetch each page and output its content — extracted
