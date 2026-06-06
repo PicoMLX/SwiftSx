@@ -91,13 +91,14 @@ public struct PageFetcher: Sendable {
         return safe
     }
 
-    /// `true` for `URLError` codes that indicate a no-network / infrastructure
-    /// failure (mapped to exit 7 so the agent escalates) rather than a per-page
-    /// error worth reporting as a generic failure.
+    /// `true` only for `URLError` codes that indicate the **whole network** is
+    /// unavailable (mapped to exit 7, and propagated even from a multi-page fetch).
+    /// Per-host failures — `timedOut`, `cannotFindHost`, `cannotConnectToHost`,
+    /// `dnsLookupFailed` — are deliberately excluded: in `--html`/`--text` one bad
+    /// result should skip that page, not abort the whole batch.
     static func isNoNetwork(_ code: URLError.Code) -> Bool {
         switch code {
-        case .notConnectedToInternet, .timedOut, .cannotFindHost,
-             .cannotConnectToHost, .networkConnectionLost, .dnsLookupFailed:
+        case .notConnectedToInternet, .networkConnectionLost:
             return true
         default:
             return false

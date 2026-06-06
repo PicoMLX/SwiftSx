@@ -333,13 +333,14 @@ public struct Sx: AsyncParsableCommand {
 
     // MARK: - Input
 
-    /// Reads all of standard input as a string (for the `sx -` convention).
+    /// Reads the whole query from standard input (for the `sx -` convention).
     ///
-    /// Standard input is the process's inherited stream, not a filesystem path,
-    /// so this does not go through the sandbox.
-    static func readStandardInput() -> String {
-        let data = (try? FileHandle.standardInput.readToEnd()) ?? Data()
-        return String(decoding: data, as: UTF8.self)
+    /// Routed through ShellKit's `Shell.current.stdin` rather than the host process's
+    /// fd 0, so `echo … | sx -` reads the correct stream when `sx` runs as an
+    /// in-process builtin under SwiftPorts/SwiftBash (where stdin is ShellKit's
+    /// virtual pipe), not only as a standalone CLI — mirroring the stdout/stderr usage.
+    static func readStandardInput() async -> String {
+        await Shell.current.stdin.readAllString()
     }
 
     // MARK: - Run
@@ -357,7 +358,7 @@ public struct Sx: AsyncParsableCommand {
 
             // Resolve the query (this may read stdin for `sx -`) and reject an empty
             // one — done after the flag checks above so a bad flag never blocks here.
-            let queryOverride = readsQueryFromStdin ? Self.readStandardInput() : nil
+            let queryOverride = readsQueryFromStdin ? await Self.readStandardInput() : nil
             guard !(queryOverride ?? query.joined(separator: " "))
                     .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw SxError(.usage, "no query given — pass search terms (e.g. sx \"swift concurrency\") or pipe them via sx -")

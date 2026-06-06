@@ -56,12 +56,14 @@ import Testing
     }
 
     @Test func noNetworkURLErrorsAreClassified() {
-        // No-network / infrastructure codes → exit 7 (escalate); others do not.
+        // Only whole-network-down codes count (exit 7 / propagated from a batch fetch);
+        // per-host failures stay per-page and must NOT classify as no-network.
         #expect(PageFetcher.isNoNetwork(.notConnectedToInternet))
-        #expect(PageFetcher.isNoNetwork(.timedOut))
-        #expect(PageFetcher.isNoNetwork(.cannotConnectToHost))
+        #expect(PageFetcher.isNoNetwork(.networkConnectionLost))
+        #expect(!PageFetcher.isNoNetwork(.timedOut))
+        #expect(!PageFetcher.isNoNetwork(.cannotConnectToHost))
+        #expect(!PageFetcher.isNoNetwork(.cannotFindHost))
         #expect(!PageFetcher.isNoNetwork(.badServerResponse))
-        #expect(!PageFetcher.isNoNetwork(.unsupportedURL))
     }
 }
 

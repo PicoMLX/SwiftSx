@@ -198,6 +198,13 @@ public struct TavilyBackend: SearchBackend {
                         at: 0
                     )
                 }
+                // Honor --count as a hard cap: the answer (when present) takes one of
+                // the N slots rather than pushing the total to N+1, matching how the
+                // other backends treat numResults. (Mirrors the clamp in makeRequest.)
+                let cap = options.numResults <= 0 ? 10 : min(options.numResults, 20)
+                if results.count > cap {
+                    results = Array(results.prefix(cap))
+                }
                 return results
             } catch {
                 throw BackendError(

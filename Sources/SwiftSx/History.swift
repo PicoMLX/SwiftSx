@@ -289,10 +289,13 @@ public enum History {
         #if canImport(Glibc) || canImport(Darwin)
         let fd = open(url.path, O_RDWR | O_CREAT, 0o644)
         guard fd >= 0 else { return -1 }
-        // If the lock itself fails (interrupted, or a filesystem that doesn't
-        // support advisory locking), don't pretend we hold it — close and report
-        // failure so the caller falls back to a best-effort unlocked write.
-        if flock(fd, LOCK_EX) != 0 {
+        // Retry on EINTR — a caught signal can interrupt the blocking flock while
+        // another process still holds the lock; giving up there would reopen the
+        // stale-read/trim race. On any other failure (e.g. a filesystem without
+        // advisory locking) don't pretend we hold it — close and report failure so
+        // the caller falls back to a best-effort unlocked write.
+        while flock(fd, LOCK_EX) != 0 {
+            if errno == EINTR { continue }
             close(fd)
             return -1
         }
