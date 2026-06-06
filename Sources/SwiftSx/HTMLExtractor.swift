@@ -110,23 +110,17 @@ public enum HTMLExtractor {
     nonisolated(unsafe) private static let reHtmlComment: NSRegularExpression =
         makeREDotAll("<!--[\\s\\S]*?-->")
 
-    // Main-region extraction
+    // Main-region extraction.
+    // `<article>`/`<main>` use a depth-balanced scan (see `extractBalancedRegion`) over a
+    // combined opener/closer regex: group 1 captures "/" for a closer and "" for an opener,
+    // so nesting is balanced and the FIRST container's true matching close terminates the
+    // region — no dropped outer tail, and no over-capture into a later sibling.
     // `(?=[\s>/])` handles attributes that wrap across lines, e.g. `<article\n  class="post">`.
-    //
-    // Two variants per container tag are kept:
-    //   * lazy   (`*?`) — used by default; for a single, non-nested container it captures
-    //                     exactly that container's inner HTML.
-    //   * greedy (`*`)  — used only when nesting is detected; it spans to the LAST closing
-    //                     tag so the OUTER container's tail is not dropped at the first
-    //                     nested closer. See `extractMainRegionInner(...)`.
-    nonisolated(unsafe) private static let reInnerArticle: NSRegularExpression =
-        makeREDotAll("<article(?=[\\s>/])[^>]*>([\\s\\S]*?)</article>")
-    nonisolated(unsafe) private static let reInnerArticleGreedy: NSRegularExpression =
-        makeREDotAll("<article(?=[\\s>/])[^>]*>([\\s\\S]*)</article>")
-    nonisolated(unsafe) private static let reInnerMain: NSRegularExpression =
-        makeREDotAll("<main(?=[\\s>/])[^>]*>([\\s\\S]*?)</main>")
-    nonisolated(unsafe) private static let reInnerMainGreedy: NSRegularExpression =
-        makeREDotAll("<main(?=[\\s>/])[^>]*>([\\s\\S]*)</main>")
+    nonisolated(unsafe) private static let reArticleBoundary: NSRegularExpression =
+        makeREDotAll("<(/?)article(?=[\\s>/])[^>]*>")
+    nonisolated(unsafe) private static let reMainBoundary: NSRegularExpression =
+        makeREDotAll("<(/?)main(?=[\\s>/])[^>]*>")
+    // `<body>` is matched lazily — a document has a single body, so there is no nesting.
     nonisolated(unsafe) private static let reInnerBody: NSRegularExpression =
         makeREDotAll("<body(?=[\\s>/])[^>]*>([\\s\\S]*?)</body>")
 
@@ -371,19 +365,16 @@ public enum HTMLExtractor {
     ///
     /// Preference order: `<article>` > `<main>` > `<body>` > whole string.
     ///
-    /// `<article>` and `<main>` use `extractMainRegionInner(...)`, which transparently upgrades
-    /// to a greedy match when the container is nested so the outer tail is not dropped (see that
-    /// helper). `<body>` is matched lazily — documents have a single `<body>`, so there is no
-    /// nesting to recover and a greedy match could only over-capture.
+    /// `<article>` and `<main>` use `extractBalancedRegion(...)`, a depth-aware scan that pairs
+    /// nested same-name containers correctly: the FIRST container's true matching close ends the
+    /// region, so neither the outer tail is dropped (a lazy match's failure) nor is a later
+    /// sibling container captured (a greedy match's failure). `<body>` is matched lazily — a
+    /// document has a single `<body>`, so there is no nesting to balance.
     private static func pickMainRegion(_ s: String) -> String {
-        if let inner = extractMainRegionInner(
-            lazy: reInnerArticle, greedy: reInnerArticleGreedy, openMarker: "<article", from: s
-        ) {
+        if let inner = extractBalancedRegion(boundary: reArticleBoundary, from: s) {
             return inner
         }
-        if let inner = extractMainRegionInner(
-            lazy: reInnerMain, greedy: reInnerMainGreedy, openMarker: "<main", from: s
-        ) {
+        if let inner = extractBalancedRegion(boundary: reMainBoundary, from: s) {
             return inner
         }
         if let inner = extractInner(re: reInnerBody, from: s) {
@@ -392,35 +383,41 @@ public enum HTMLExtractor {
         return s
     }
 
-    /// Extracts the inner HTML of a main-region container, recovering from nesting.
+    /// Extracts the inner HTML of the FIRST container delimited by `boundary` — a combined
+    /// opener/closer regex whose capture group 1 is `"/"` for a closing tag and `""` for an
+    /// opening tag — using a depth-balanced scan.
     ///
-    /// A lazy match (`reInner…`) stops at the FIRST closing tag, which discards the outer
-    /// container's tail when the same tag is nested, e.g.
-    /// `<article><article>…</article><p>tail</p></article>` would lose `tail`. Balanced matching
-    /// is impossible with `NSRegularExpression`, so this uses a heuristic that is byte-identical
-    /// to the lazy behaviour for the common, non-nested case:
+    /// Walking the boundary matches in order and tracking nesting depth, the closing tag that
+    /// returns the depth to zero is the first container's *true* match and terminates the region.
+    /// This avoids both regex failure modes: a lazy match drops the outer tail when the container
+    /// is nested, and a greedy match over-captures into a later sibling container.
     ///
-    /// 1. Take the lazy match.
-    /// 2. If its inner HTML still contains another opener of the same tag (`openMarker`), the
-    ///    match terminated at a nested closer — re-match greedily (to the LAST closing tag) so
-    ///    the full outer container, including its tail, is captured. Nested openers/closers left
-    ///    inside are stripped harmlessly by later passes.
-    ///
-    /// - Note: A page containing several *separate* top-level containers of this tag is still
-    ///   reduced to the first one (no `openMarker` inside its inner HTML, so the lazy match is
-    ///   kept) — matching the previous behaviour.
-    private static func extractMainRegionInner(
-        lazy: NSRegularExpression,
-        greedy: NSRegularExpression,
-        openMarker: String,
-        from s: String
-    ) -> String? {
-        guard let lazyInner = extractInner(re: lazy, from: s) else { return nil }
-        if lazyInner.range(of: openMarker, options: .caseInsensitive) != nil,
-           let greedyInner = extractInner(re: greedy, from: s) {
-            return greedyInner
+    /// - Returns: The inner HTML, or `nil` when there is no opener or the tags never balance
+    ///   (so `pickMainRegion` falls through to the next candidate).
+    private static func extractBalancedRegion(boundary: NSRegularExpression, from s: String) -> String? {
+        let ns = s as NSString
+        let matches = boundary.matches(in: s, range: NSRange(location: 0, length: ns.length))
+        var depth = 0
+        var contentStart: Int? = nil
+        for m in matches {
+            let isCloser = m.range(at: 1).length == 1   // group 1 == "/" → closing tag
+            if contentStart == nil {
+                if isCloser { continue }                // ignore stray closers before any opener
+                depth = 1
+                contentStart = m.range.location + m.range.length
+            } else if isCloser {
+                depth -= 1
+                if depth == 0 {
+                    let start = contentStart!
+                    let end = m.range.location
+                    guard end >= start else { return nil }
+                    return ns.substring(with: NSRange(location: start, length: end - start))
+                }
+            } else {
+                depth += 1
+            }
         }
-        return lazyInner
+        return nil
     }
 
     /// Extracts the inner HTML of the first match for `re` (capture group 1).

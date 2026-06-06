@@ -841,4 +841,19 @@ import Testing
         #expect(result.contains("Child"))
         #expect(!result.contains("ParentChild"))
     }
+
+    // MARK: - Review item: balanced main-region scan (no sibling over-capture)
+
+    /// A nested `<article>` followed by a later sibling `<article>` must extract only the
+    /// first (outer) container — the depth-balanced scan stops at its true matching close,
+    /// so unrelated sibling content is not pulled in.
+    @Test func nestedArticleWithLaterSiblingDoesNotOvercapture() {
+        let html = "<body><article>Story<article>Nested</article>Tail</article>"
+            + "<article>UNRELATED SIBLING</article></body>"
+        let result = HTMLExtractor.extract(html)
+        #expect(result.contains("Story"))
+        #expect(result.contains("Nested"))
+        #expect(result.contains("Tail"))
+        #expect(!result.contains("UNRELATED SIBLING"))
+    }
 }

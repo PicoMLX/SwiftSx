@@ -271,8 +271,8 @@ public struct Sx: AsyncParsableCommand {
                 group.addTask {
                     do {
                         return (index, try await fetcher.fetch(result.url))
-                    } catch let sxError as SxError where sxError.exitCode == .refused {
-                        throw sxError            // a sandbox denial is a policy stop
+                    } catch let sxError as SxError where sxError.exitCode == .refused || sxError.exitCode == .auth {
+                        throw sxError            // sandbox denial (3) or no-network (7): fail-closed, not a per-page skip
                     } catch is CancellationError {
                         throw CancellationError()
                     } catch {
