@@ -274,6 +274,21 @@ public struct Sx: AsyncParsableCommand {
         Shell.current.stderr.write(Data("sx: wrote results to \(output)\n".utf8))
     }
 
+    /// Resolves and sandbox-authorizes the `--output` destination, if any.
+    ///
+    /// Run as a preflight before searching so a denied output path fails closed
+    /// (exit 3) without spending backend/API quota or leaking the query over the
+    /// network. ``emitResults(_:)`` re-authorizes at write time (authorization is
+    /// idempotent), so it stays self-contained.
+    func preflightOutputAuthorization() async throws {
+        guard let output = output else { return }
+        do {
+            try await Shell.authorize(Shell.resolve(output))
+        } catch {
+            throw SxError(.refused, "cannot write output to \(output): \(error)")
+        }
+    }
+
     // MARK: - Content fetch (--html)
 
     /// Fetches each result's page concurrently, preserving input order.
@@ -396,6 +411,11 @@ public struct Sx: AsyncParsableCommand {
                 ).utf8))
                 return
             }
+
+            // Preflight the --output destination through the sandbox BEFORE any
+            // network work, so a denied path fails closed (exit 3) without spending
+            // backend/API quota or leaking the query. emitResults re-checks at write.
+            try await preflightOutputAuthorization()
 
             // An explicit --engine must work even if the config's default/fallback
             // engines are misconfigured, so build a manager whose primary IS the
