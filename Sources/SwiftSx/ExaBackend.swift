@@ -11,6 +11,17 @@ import FoundationNetworking
 private struct ExaAPIRequest: Encodable {
     let query: String
     let numResults: Int
+    /// Requests page contents for each result.
+    ///
+    /// Without a `contents` object the Exa `/search` endpoint returns only
+    /// metadata (title/url) — no `text` or `summary` — so every mapped snippet
+    /// would be empty. Asking for `text` populates the field the mapper reads.
+    let contents: Contents
+
+    /// The `contents` sub-object; `text: true` asks Exa to include page text.
+    struct Contents: Encodable {
+        let text: Bool
+    }
 }
 
 /// The JSON envelope returned by the Exa `/search` API endpoint.
@@ -282,7 +293,7 @@ public struct ExaBackend: SearchBackend {
             n = 10
         }
 
-        let requestBody = ExaAPIRequest(query: queryString, numResults: n)
+        let requestBody = ExaAPIRequest(query: queryString, numResults: n, contents: .init(text: true))
         let bodyData: Data
         do {
             bodyData = try JSONEncoder().encode(requestBody)

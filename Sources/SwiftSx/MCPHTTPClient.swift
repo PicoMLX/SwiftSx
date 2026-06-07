@@ -207,7 +207,25 @@ struct MCPHTTPClient: Sendable {
         }
 
         let status = response.status.code
-        guard (200...299).contains(status) else {
+        switch status {
+        case 200...299:
+            break   // fall through to decode the envelope below
+        case 401, 403:
+            // Auth failure — distinct from a generic network error so the agent
+            // gets an accurate message (still fail-closed / exit 7).
+            throw BackendError(
+                backend: "exa-mcp",
+                code: .auth,
+                message: "exa MCP server rejected the request (HTTP \(status)) — check the MCP URL or its credentials (engines_exa.mcp_url)"
+            )
+        case 429:
+            // Rate limited — a transient (exit 1) condition, not fail-closed.
+            throw BackendError(
+                backend: "exa-mcp",
+                code: .rateLimit,
+                message: "exa MCP server is rate limiting (HTTP 429) — back off and retry"
+            )
+        default:
             throw BackendError(
                 backend: "exa-mcp",
                 code: .network,

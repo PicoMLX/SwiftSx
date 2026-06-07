@@ -499,6 +499,51 @@ struct TavilySearchTests {
         }
     }
 
+    @Test func status400ThrowsInvalidResponseNotNetwork() async throws {
+        // A 400 is a bad-request (usage) error, not network — it must map to the
+        // transient class (exit 1), never fail-closed (exit 7).
+        let backend = makeBackend()
+        setHandler(status: 400, body: Data("Bad Request".utf8))
+
+        await #expect(throws: BackendError.self) {
+            _ = try await backend.search(SearchOptions(query: "test"))
+        }
+
+        do {
+            _ = try await backend.search(SearchOptions(query: "test"))
+        } catch let error as BackendError {
+            #expect(error.code == .invalidResponse)
+            #expect(error.code.sxExitCode == .general)
+            #expect(error.message.contains("400"))
+        }
+    }
+
+    @Test func status432ThrowsRateLimitNotNetwork() async throws {
+        let backend = makeBackend()
+        setHandler(status: 432, body: Data("Plan limit".utf8))
+
+        do {
+            _ = try await backend.search(SearchOptions(query: "test"))
+        } catch let error as BackendError {
+            #expect(error.code == .rateLimit)
+            #expect(error.code.sxExitCode == .general)
+            #expect(error.message.contains("432"))
+        }
+    }
+
+    @Test func status433ThrowsRateLimitNotNetwork() async throws {
+        let backend = makeBackend()
+        setHandler(status: 433, body: Data("Out of credits".utf8))
+
+        do {
+            _ = try await backend.search(SearchOptions(query: "test"))
+        } catch let error as BackendError {
+            #expect(error.code == .rateLimit)
+            #expect(error.code.sxExitCode == .general)
+            #expect(error.message.contains("433"))
+        }
+    }
+
     // MARK: Malformed JSON
 
     @Test func malformedJSONThrowsInvalidResponse() async throws {

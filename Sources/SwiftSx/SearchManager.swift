@@ -178,6 +178,13 @@ public struct SearchManager: Sendable {
         } catch let error as BackendError {
             // Convert to the stable exit-code contract, mirroring the fallback path.
             throw SxError(error.code.sxExitCode, error.message)
+        } catch {
+            // Any other error — e.g. a raw URLSession or decoder error that
+            // escaped a backend's wrapping — must not bypass the contract. Map
+            // it to a stable exit code instead of leaking a raw description,
+            // mirroring how the fallback path treats a non-BackendError (not
+            // fail-closed → exit 1).
+            throw SxError(.general, "engine '\(engine)' failed: \(error)")
         }
     }
 

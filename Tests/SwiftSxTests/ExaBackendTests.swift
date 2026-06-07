@@ -134,6 +134,15 @@ private func mcpRPCEnvelope(resultJSON: Data) -> Data {
         let dict = decodeExaBody(body)
         #expect(dict["numResults"] as? Int == 10)
     }
+
+    @Test func bodyRequestsContentsText() throws {
+        // Exa returns no text/summary unless `contents` is requested, so the
+        // body must ask for page text or every snippet comes back empty.
+        let (_, body) = try backend.makeAPIRequest(SearchOptions(query: "swift"))
+        let dict = decodeExaBody(body)
+        let contents = dict["contents"] as? [String: Any]
+        #expect(contents?["text"] as? Bool == true)
+    }
 }
 
 // MARK: - makeAPIRequest: headers
@@ -543,6 +552,76 @@ struct ExaMCPSearchTests {
 
         let results = try await backend.search(SearchOptions(query: "test", numResults: 2))
         #expect(results.count == 2)
+    }
+
+    // MARK: MCP server status → error code
+    //
+    // The MCP request sequence is `initialize` (id 1) then `tools/call` (id 2),
+    // so the status under test is returned on the second sequential response.
+
+    @Test func mcpStatus401ThrowsAuthError() async throws {
+        let backend = makeBackend()
+        MockURLProtocol.setSequentialResponses([
+            (status: 200, body: Data(#"{"jsonrpc":"2.0","id":1,"result":{}}"#.utf8)),
+            (status: 401, body: Data("Unauthorized".utf8)),
+        ])
+
+        do {
+            _ = try await backend.search(SearchOptions(query: "test"))
+            Issue.record("Expected a BackendError to be thrown")
+        } catch let error as BackendError {
+            #expect(error.code == .auth)
+            #expect(error.message.contains("401"))
+        }
+    }
+
+    @Test func mcpStatus403ThrowsAuthError() async throws {
+        let backend = makeBackend()
+        MockURLProtocol.setSequentialResponses([
+            (status: 200, body: Data(#"{"jsonrpc":"2.0","id":1,"result":{}}"#.utf8)),
+            (status: 403, body: Data("Forbidden".utf8)),
+        ])
+
+        do {
+            _ = try await backend.search(SearchOptions(query: "test"))
+            Issue.record("Expected a BackendError to be thrown")
+        } catch let error as BackendError {
+            #expect(error.code == .auth)
+            #expect(error.message.contains("403"))
+        }
+    }
+
+    @Test func mcpStatus429ThrowsRateLimitError() async throws {
+        let backend = makeBackend()
+        MockURLProtocol.setSequentialResponses([
+            (status: 200, body: Data(#"{"jsonrpc":"2.0","id":1,"result":{}}"#.utf8)),
+            (status: 429, body: Data("Too Many Requests".utf8)),
+        ])
+
+        do {
+            _ = try await backend.search(SearchOptions(query: "test"))
+            Issue.record("Expected a BackendError to be thrown")
+        } catch let error as BackendError {
+            #expect(error.code == .rateLimit)
+            #expect(error.message.contains("429"))
+        }
+    }
+
+    @Test func mcpStatus500ThrowsNetworkError() async throws {
+        // Regression guard: genuine server errors stay classified as network.
+        let backend = makeBackend()
+        MockURLProtocol.setSequentialResponses([
+            (status: 200, body: Data(#"{"jsonrpc":"2.0","id":1,"result":{}}"#.utf8)),
+            (status: 500, body: Data("Server Error".utf8)),
+        ])
+
+        do {
+            _ = try await backend.search(SearchOptions(query: "test"))
+            Issue.record("Expected a BackendError to be thrown")
+        } catch let error as BackendError {
+            #expect(error.code == .network)
+            #expect(error.message.contains("500"))
+        }
     }
 }
 
