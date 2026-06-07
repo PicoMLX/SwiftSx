@@ -5,6 +5,9 @@ import ShellKit
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
+#if canImport(Security)
+import Security   // SecTrust override for allowInsecureTLS (Apple platforms only)
+#endif
 
 /// A thin, Sendable wrapper around `URLSession` that gates every outbound
 /// request through the ShellKit sandbox before sending it.
@@ -25,11 +28,29 @@ public struct HTTPTransport: Sendable {
     }
 
     /// Build a transport whose session applies `timeout` (seconds) to each
-    /// request and resource, so configured failover latency is honored.
-    public init(timeout: TimeInterval) {
+    /// request and resource (so configured failover latency is honored) and,
+    /// optionally, disables TLS certificate verification.
+    ///
+    /// - Important: `allowInsecureTLS` is honored **only on Apple platforms** (it
+    ///   installs a `SecTrust` override). On Linux the flag is accepted but
+    ///   ignored — certificates are always verified — because swift-corelibs
+    ///   `URLSession` exposes no trust-override hook. It exists for a self-hosted
+    ///   SearXNG with a self-signed certificate; it is never applied to the
+    ///   public API backends.
+    public init(timeout: TimeInterval, allowInsecureTLS: Bool = false) {
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = timeout
         configuration.timeoutIntervalForResource = timeout
+        #if canImport(Security)
+        if allowInsecureTLS {
+            self.session = URLSession(
+                configuration: configuration,
+                delegate: InsecureTrustDelegate(),
+                delegateQueue: nil
+            )
+            return
+        }
+        #endif
         self.session = URLSession(configuration: configuration)
     }
 
@@ -70,3 +91,25 @@ public struct HTTPTransport: Sendable {
         return try await session.data(for: request)
     }
 }
+
+#if canImport(Security)
+/// A `URLSessionDelegate` that accepts any server certificate.
+///
+/// Installed only when ``HTTPTransport/init(timeout:allowInsecureTLS:)`` is built
+/// with `allowInsecureTLS == true`. Stateless, so safe to mark
+/// `@unchecked Sendable`.
+private final class InsecureTrustDelegate: NSObject, URLSessionDelegate, @unchecked Sendable {
+    func urlSession(
+        _ session: URLSession,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+              let trust = challenge.protectionSpace.serverTrust else {
+            completionHandler(.performDefaultHandling, nil)
+            return
+        }
+        completionHandler(.useCredential, URLCredential(trust: trust))
+    }
+}
+#endif

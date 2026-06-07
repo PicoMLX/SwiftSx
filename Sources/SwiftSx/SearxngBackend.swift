@@ -315,11 +315,13 @@ extension SearxngBackend {
         from config: Config,
         transport: HTTPTransport? = nil
     ) -> any SearchBackend {
-        // Apply the configured request timeout unless a transport is injected
-        // (tests inject a mock-backed session). NOTE: `config.noVerifySSL` is not
-        // yet honored — skipping TLS verification needs a URLSession trust
-        // override and is tracked as a separate change.
-        let resolvedTransport = transport ?? HTTPTransport(timeout: config.timeout)
+        // Apply the configured request timeout (and TLS-verification override for
+        // a self-hosted instance) unless a transport is injected — tests inject a
+        // mock-backed session. `no_verify_ssl` is honored on Apple platforms only
+        // (see HTTPTransport); it's scoped to SearXNG because the public API
+        // backends always use valid certificates.
+        let resolvedTransport = transport
+            ?? HTTPTransport(timeout: config.timeout, allowInsecureTLS: config.noVerifySSL)
 
         // Prefer the deduped/normalised list; fall back to the single URL.
         let urls: [String] = config.searxngURLs.isEmpty
