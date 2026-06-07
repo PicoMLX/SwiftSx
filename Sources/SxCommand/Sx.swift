@@ -44,6 +44,9 @@ public struct Sx: AsyncParsableCommand {
     @Flag(name: .long, help: "Output result URLs only, one per line.")
     public var links: Bool = false
 
+    @Flag(name: .long, help: "Fetch each result page and output its raw HTML (overrides the format flags).")
+    public var html: Bool = false
+
     // MARK: Query tuning
 
     @Option(name: [.customShort("n"), .customLong("count")],
@@ -216,6 +219,66 @@ public struct Sx: AsyncParsableCommand {
         Shell.current.stderr.write(Data("sx: wrote results to \(output)\n".utf8))
     }
 
+    // MARK: - Content fetch (--html)
+
+    /// Fetches each result's page concurrently, preserving input order.
+    ///
+    /// A per-page failure other than a sandbox refusal or cancellation yields
+    /// `nil` for that page rather than aborting the whole command — one
+    /// unreachable result shouldn't sink the rest.
+    func fetchPages(_ results: [SearchResult], using fetcher: PageFetcher) async throws -> [String?] {
+        try await withThrowingTaskGroup(of: (Int, String?).self) { group in
+            for (index, result) in results.enumerated() {
+                group.addTask {
+                    do {
+                        return (index, try await fetcher.fetch(result.url))
+                    } catch let sxError as SxError where sxError.exitCode == .refused {
+                        throw sxError            // a sandbox denial is a policy stop
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch {
+                        // Defence in depth: surface cancellation even if it
+                        // arrived as a transport error (PageFetcher already maps
+                        // URLError.cancelled → CancellationError).
+                        if Task.isCancelled { throw CancellationError() }
+                        return (index, nil)      // skip a single unreachable page
+                    }
+                }
+            }
+            var bodies = [String?](repeating: nil, count: results.count)
+            for try await (index, body) in group {
+                bodies[index] = body
+            }
+            return bodies
+        }
+    }
+
+    /// Fetches each result's page (raw HTML) and renders the document, emitting a
+    /// stderr note for any page that couldn't be fetched.
+    func renderFetchedPages(_ results: [SearchResult], using fetcher: PageFetcher) async throws -> String {
+        let bodies = try await fetchPages(results, using: fetcher)
+        let stderr = Shell.current.stderr
+        for (result, body) in zip(results, bodies) where body == nil {
+            stderr.write(Data("sx: could not fetch \(result.url)\n".utf8))
+        }
+        return Self.renderPages(results, contents: bodies)
+    }
+
+    /// Renders fetched page content as one document — a titled block per result
+    /// (heading + URL + content), separated by `---`. `nil` content (an
+    /// unreachable page) becomes an inline note. Pure (no I/O) so it is
+    /// unit-testable.
+    static func renderPages(_ results: [SearchResult], contents: [String?]) -> String {
+        var blocks: [String] = []
+        for (result, content) in zip(results, contents) {
+            let heading = result.title.isEmpty ? result.url : result.title
+            let block = "# \(heading)\n\(result.url)\n\n"
+                + (content ?? "(sx: could not fetch this page)")
+            blocks.append(block)
+        }
+        return blocks.joined(separator: "\n\n---\n\n") + "\n"
+    }
+
     // MARK: - Input
 
     /// Reads all of standard input as a string (for the `sx -` convention).
@@ -261,22 +324,28 @@ public struct Sx: AsyncParsableCommand {
                 outcome = try await manager.search(options)
             }
 
-            // Apply --first (top result only), then render the data.
+            // Apply --first (top result only), then render.
             let results = selectedResults(outcome.results)
             let rendered: String
-            switch format {
-            case .json(let clean):
-                rendered = try ResultRenderer.renderJSON(
-                    query: options.query, results: results, clean: clean
-                )
-            case .links:
-                rendered = ResultRenderer.renderLinks(results)
-            case .plain:
-                // Colour is suppressed by --no-color or the config's no_color.
-                rendered = ResultRenderer.renderPlain(
-                    query: options.query, results: results,
-                    expand: expand, noColor: noColor || config.noColor
-                )
+            if html {
+                // Content mode: fetch each page and output its raw HTML. Overrides
+                // the JSON/links/plain format flags.
+                rendered = try await renderFetchedPages(results, using: PageFetcher(timeout: config.timeout))
+            } else {
+                switch format {
+                case .json(let clean):
+                    rendered = try ResultRenderer.renderJSON(
+                        query: options.query, results: results, clean: clean
+                    )
+                case .links:
+                    rendered = ResultRenderer.renderLinks(results)
+                case .plain:
+                    // Colour is suppressed by --no-color or the config's no_color.
+                    rendered = ResultRenderer.renderPlain(
+                        query: options.query, results: results,
+                        expand: expand, noColor: noColor || config.noColor
+                    )
+                }
             }
             try await emitResults(rendered)
 
