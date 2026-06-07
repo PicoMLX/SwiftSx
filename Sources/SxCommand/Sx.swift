@@ -5,9 +5,10 @@ import SwiftSx
 
 /// The root `sx` command — a multi-engine web search tool built for LLM agents.
 ///
-/// The search pipeline (config, backends, manager, rendering) lands across the
-/// PRs listed in `AGENTS.md`. This skeleton wires up the command surface,
-/// `--version`, and `--help`; `run()` fails closed until the pipeline is in.
+/// Loads the (sandboxed) config, builds the backend registry + manager, runs the
+/// query (with fallback, or against a single `--engine`), and renders the
+/// results: machine data on stdout, diagnostics on stderr, stable exit codes,
+/// and a `--json` mode that is always valid JSON.
 public struct Sx: AsyncParsableCommand {
     public static let configuration = CommandConfiguration(
         commandName: "sx",
@@ -21,16 +22,162 @@ public struct Sx: AsyncParsableCommand {
         subcommands: [HistoryCommand.self]
     )
 
+    // MARK: Arguments
+
     @Argument(help: "The search query (one or more terms).")
     public var query: [String] = []
 
+    // MARK: Engine selection
+
+    @Option(name: [.short, .long],
+            help: "Use a single engine with no fallback (searxng, brave, tavily, exa, jina).")
+    public var engine: String?
+
+    // MARK: Output format
+
+    @Flag(name: .long, help: "Output results as a JSON envelope.")
+    public var json: Bool = false
+
+    @Flag(name: .long, help: "Output compact JSON, omitting empty/zero fields (implies --json).")
+    public var clean: Bool = false
+
+    @Flag(name: .long, help: "Output result URLs only, one per line.")
+    public var links: Bool = false
+
+    // MARK: Query tuning
+
+    @Option(name: [.customShort("n"), .customLong("count")],
+            help: "Maximum number of results to return.")
+    public var count: Int?
+
+    // MARK: Plain-output UX
+
+    @Flag(name: .customLong("no-color"), help: "Disable ANSI colour in plain output.")
+    public var noColor: Bool = false
+
+    @Flag(name: .long, help: "Show the full URL beneath each result (plain output).")
+    public var expand: Bool = false
+
+    // MARK: Behaviour
+
+    @Flag(name: .customLong("dry-run"),
+          help: "Print the resolved search plan and exit, without querying.")
+    public var dryRun: Bool = false
+
+    @Flag(name: .customLong("fail-empty"),
+          help: "Exit with code 4 if the search returns no results.")
+    public var failEmpty: Bool = false
+
     public init() {}
 
+    // MARK: - Pure helpers (testable without I/O)
+
+    /// Builds the ``SearchOptions`` for this invocation by overlaying the parsed
+    /// flags onto the config's defaults.
+    func searchOptions(from config: Config) -> SearchOptions {
+        var options = config.baseSearchOptions()
+        options.query = query.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        if let count = count { options.numResults = count }
+        return options
+    }
+
+    /// Renders the `--dry-run` plan: a deterministic, human-readable summary of
+    /// what *would* be searched, written to stdout. No network occurs.
+    static func dryRunPlan(
+        engine: String?,
+        config: Config,
+        options: SearchOptions,
+        format: OutputFormat
+    ) -> String {
+        var lines = ["sx dry-run — no query sent"]
+        if let engine = engine {
+            lines.append("  engine:     \(engine) (explicit, no fallback)")
+        } else {
+            lines.append("  engine:     \(config.engine)")
+            if !config.fallbackEngines.isEmpty {
+                lines.append("  fallbacks:  \(config.fallbackEngines.joined(separator: ", "))")
+            }
+        }
+        lines.append("  query:      \(options.query)")
+        lines.append("  results:    \(options.numResults)")
+        if !options.categories.isEmpty {
+            lines.append("  categories: \(options.categories.joined(separator: ", "))")
+        }
+        lines.append("  format:     \(format.label)")
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    // MARK: - Run
+
     public func run() async throws {
-        // Skeleton: fail closed with an actionable message rather than
-        // pretending to succeed. The pipeline is being ported — see AGENTS.md.
-        Shell.current.stderr.write(Data(
-            "sx: not yet implemented in this build — the search pipeline is being ported (see AGENTS.md roadmap)\n".utf8))
-        throw ExitCode(SxExitCode.general.rawValue)
+        let stdout = Shell.current.stdout
+        let stderr = Shell.current.stderr
+
+        do {
+            let config = try await Config.load()
+
+            let options = searchOptions(from: config)
+            guard !options.query.isEmpty else {
+                throw SxError(.usage, "no query given — pass one or more search terms, e.g. sx \"swift concurrency\"")
+            }
+
+            let format = OutputFormat.resolve(
+                json: json, clean: clean, links: links, configDefault: config.defaultOutput
+            )
+
+            // --dry-run: print the plan and stop before building backends or
+            // making any network call — a pure, side-effect-free preview.
+            if dryRun {
+                stdout.write(Data(Self.dryRunPlan(
+                    engine: engine, config: config, options: options, format: format
+                ).utf8))
+                return
+            }
+
+            let manager = try SearchManager.make(from: config)
+
+            let outcome: SearchOutcome
+            if let engine = engine {
+                outcome = try await manager.searchExplicit(engine, options)
+            } else {
+                outcome = try await manager.search(options)
+            }
+
+            // Render the data to stdout.
+            let rendered: String
+            switch format {
+            case .json(let clean):
+                rendered = try ResultRenderer.renderJSON(
+                    query: options.query, results: outcome.results, clean: clean
+                )
+            case .links:
+                rendered = ResultRenderer.renderLinks(outcome.results)
+            case .plain:
+                // Colour is suppressed by --no-color or the config's no_color.
+                rendered = ResultRenderer.renderPlain(
+                    query: options.query, results: outcome.results,
+                    expand: expand, noColor: noColor || config.noColor
+                )
+            }
+            stdout.write(Data(rendered.utf8))
+
+            // Record history. Non-fatal: the search already succeeded and its
+            // output was written, so a history failure is a note, not an error.
+            do {
+                try await History.append(query: options.query, config: config)
+            } catch let historyError as SxError {
+                stderr.write(Data("sx: note: history not recorded — \(historyError.message)\n".utf8))
+            }
+
+            // --fail-empty: signal "no results" with a distinct exit code, after
+            // emitting the (valid, possibly empty) output above.
+            if failEmpty && outcome.results.isEmpty {
+                stderr.write(Data("sx: no results for query: \(options.query)\n".utf8))
+                throw ExitCode(SxExitCode.empty.rawValue)
+            }
+        } catch let error as SxError {
+            stderr.write(Data("sx: \(error.message)\n".utf8))
+            throw ExitCode(error.exitCode.rawValue)
+        }
     }
 }
