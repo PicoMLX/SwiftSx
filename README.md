@@ -7,9 +7,11 @@ library. Like the original Go tool, it queries one or more search backends —
 SearXNG, Exa, Jina, Brave Search, and Tavily — with automatic fallback when the
 primary engine is unavailable.
 
-> **Status:** Functional. `sx "query"` searches across all five backends with
-> automatic failover, JSON/links/plain output, query history, and all filesystem
-> access mediated by a sandbox. It is built to be driven by **LLM agents** —
+> **Status:** Functional. `sx "query"` supports all five backends — failover is
+> automatic but follows the configured `fallback_engines` chain (a default config,
+> or a single API key, queries only the primary) — with JSON/links/plain output,
+> query history, and all filesystem access mediated by a sandbox. It is built to be
+> driven by **LLM agents** —
 > machine-readable output, `sx:`-prefixed diagnostics, and stable exit codes.
 > Landing as a stack of small PRs; APIs may still shift before a tagged release.
 
@@ -40,10 +42,14 @@ sx history                             # show query history
 
 ## Command-line usage
 
+The CLI is the `sx` executable product in this package. From a checkout, run it with
+`swift run sx "swift concurrency"`; or build a release binary with `swift build -c release`
+and put `.build/release/sx` on your `PATH`. The examples below assume `sx` is on the `PATH`.
+
 ```sh
 sx "swift concurrency"                  # search (plain, human-readable)
 sx "swift concurrency" --json           # JSON envelope (always valid JSON)
-sx "swift concurrency" --clean          # compact JSON, empty fields omitted
+sx "swift concurrency" --clean          # JSON with empty/zero fields omitted (still pretty-printed)
 sx "swift concurrency" --links          # result URLs only, one per line
 sx "swift concurrency" -e brave         # one engine, no fallback
 sx "swift concurrency" -n 5             # at most 5 results

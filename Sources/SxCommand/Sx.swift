@@ -91,7 +91,7 @@ public struct Sx: AsyncParsableCommand {
     @Flag(name: .long, help: "Show the full URL beneath each result (plain output).")
     public var expand: Bool = false
 
-    @Flag(name: .long, help: "Return only the top result.")
+    @Flag(name: .long, help: "Output only the top result.")
     public var first: Bool = false
 
     // MARK: Behaviour
@@ -148,7 +148,30 @@ public struct Sx: AsyncParsableCommand {
         guard options.pageNo >= 1 else {
             throw SxError(.usage, "--page must be 1 or greater (got \(options.pageNo))")
         }
+        if let count = count, count < 1 {
+            throw SxError(.usage, "--count must be 1 or greater (got \(count))")
+        }
         return options
+    }
+
+    /// Validates flag-only inputs that depend on neither config nor stdin, so the
+    /// command can reject them (usage, exit 2) before any I/O — crucially before
+    /// reading stdin for `sx -`, which can block on an open pipe/TTY. Pure, so it
+    /// is unit-testable directly.
+    ///
+    /// - Throws: ``SxError`` with code `.usage` for a non-positive `--count` /
+    ///   `--page`, or for `--html`/`--text` combined with `--json`/`--clean`
+    ///   (raw page bodies would break the "`--json` is always valid JSON" contract).
+    func validateFlags() throws {
+        if let count = count, count < 1 {
+            throw SxError(.usage, "--count must be 1 or greater (got \(count))")
+        }
+        if let page = page, page < 1 {
+            throw SxError(.usage, "--page must be 1 or greater (got \(page))")
+        }
+        if (html || text) && (json || clean) {
+            throw SxError(.usage, "--html/--text cannot be combined with --json/--clean (fetched page content is not JSON)")
+        }
     }
 
     /// Renders the `--dry-run` plan: a deterministic, human-readable summary of
@@ -157,7 +180,9 @@ public struct Sx: AsyncParsableCommand {
         engine: String?,
         config: Config,
         options: SearchOptions,
-        format: OutputFormat
+        format: OutputFormat,
+        html: Bool = false,
+        text: Bool = false
     ) -> String {
         var lines = ["sx dry-run — no query sent"]
         if let engine = engine {
@@ -185,13 +210,40 @@ public struct Sx: AsyncParsableCommand {
         if !options.language.isEmpty {
             lines.append("  language:   \(options.language)")
         }
-        lines.append("  format:     \(format.label)")
+        if !options.safeSearch.isEmpty {
+            lines.append("  safe-search: \(options.safeSearch)")
+        }
+        // --html/--text override the result-list format and fetch each result page,
+        // so report the actual content mode rather than the unrelated format label.
+        if text {
+            lines.append("  format:     text (fetch each result page → Markdown)")
+        } else if html {
+            lines.append("  format:     html (fetch each result page → raw HTML)")
+        } else {
+            lines.append("  format:     \(format.label)")
+        }
         return lines.joined(separator: "\n") + "\n"
     }
 
     /// Applies `--first`: keeps only the top result when set, otherwise all.
     func selectedResults(_ results: [SearchResult]) -> [SearchResult] {
         first ? Array(results.prefix(1)) : results
+    }
+
+    /// Final shaping before rendering: drop URL-less results in URL-dependent modes
+    /// (`--links`/`--html`/`--text`), enforce `--count`, then apply `--first`.
+    ///
+    /// The `--count` cap runs *after* the URL filter — deliberately not in the backend
+    /// — so a URL-less Tavily answer stub only consumes a slot in the modes that
+    /// actually render it. In URL modes the stub is already filtered out, so the cap
+    /// can never drop the last usable result to make room for an answer that wouldn't
+    /// be shown (`--count 1 --links` with an answer present still returns the result).
+    func shapedResults(_ results: [SearchResult], needsURL: Bool, count: Int) -> [SearchResult] {
+        var base = needsURL ? results.filter { !$0.url.isEmpty } : results
+        if count > 0, base.count > count {
+            base = Array(base.prefix(count))
+        }
+        return selectedResults(base)
     }
 
     // MARK: - Output
@@ -222,6 +274,21 @@ public struct Sx: AsyncParsableCommand {
         Shell.current.stderr.write(Data("sx: wrote results to \(output)\n".utf8))
     }
 
+    /// Resolves and sandbox-authorizes the `--output` destination, if any.
+    ///
+    /// Run as a preflight before searching so a denied output path fails closed
+    /// (exit 3) without spending backend/API quota or leaking the query over the
+    /// network. ``emitResults(_:)`` re-authorizes at write time (authorization is
+    /// idempotent), so it stays self-contained.
+    func preflightOutputAuthorization() async throws {
+        guard let output = output else { return }
+        do {
+            try await Shell.authorize(Shell.resolve(output))
+        } catch {
+            throw SxError(.refused, "cannot write output to \(output): \(error)")
+        }
+    }
+
     // MARK: - Content fetch (--html)
 
     /// Fetches each result's page concurrently, preserving input order.
@@ -235,8 +302,8 @@ public struct Sx: AsyncParsableCommand {
                 group.addTask {
                     do {
                         return (index, try await fetcher.fetch(result.url))
-                    } catch let sxError as SxError where sxError.exitCode == .refused {
-                        throw sxError            // a sandbox denial is a policy stop
+                    } catch let sxError as SxError where sxError.exitCode == .refused || sxError.exitCode == .auth {
+                        throw sxError            // sandbox denial (3) or no-network (7): fail-closed, not a per-page skip
                     } catch is CancellationError {
                         throw CancellationError()
                     } catch {
@@ -265,7 +332,7 @@ public struct Sx: AsyncParsableCommand {
         let bodies = try await fetchPages(results, using: fetcher)
         let stderr = Shell.current.stderr
         for (result, body) in zip(results, bodies) where body == nil {
-            stderr.write(Data("sx: could not fetch \(result.url)\n".utf8))
+            stderr.write(Data("sx: could not fetch \(PageFetcher.redacted(result.url))\n".utf8))
         }
         return Self.renderPages(results, contents: Self.pageContents(bodies, asText: asText))
     }
@@ -297,13 +364,14 @@ public struct Sx: AsyncParsableCommand {
 
     // MARK: - Input
 
-    /// Reads all of standard input as a string (for the `sx -` convention).
+    /// Reads the whole query from standard input (for the `sx -` convention).
     ///
-    /// Standard input is the process's inherited stream, not a filesystem path,
-    /// so this does not go through the sandbox.
-    static func readStandardInput() -> String {
-        let data = (try? FileHandle.standardInput.readToEnd()) ?? Data()
-        return String(decoding: data, as: UTF8.self)
+    /// Routed through ShellKit's `Shell.current.stdin` rather than the host process's
+    /// fd 0, so `echo … | sx -` reads the correct stream when `sx` runs as an
+    /// in-process builtin under SwiftPorts/SwiftBash (where stdin is ShellKit's
+    /// virtual pipe), not only as a standalone CLI — mirroring the stdout/stderr usage.
+    static func readStandardInput() async -> String {
+        await Shell.current.stdin.readAllString()
     }
 
     // MARK: - Run
@@ -313,9 +381,21 @@ public struct Sx: AsyncParsableCommand {
         let stderr = Shell.current.stderr
 
         do {
-            let config = try await Config.load()
+            // Reject user-fixable bad FLAG input BEFORE any I/O — including reading
+            // stdin, which can block on an open pipe/TTY — so the agent always gets
+            // the usage exit code (2) immediately rather than hanging or hitting a
+            // config/sandbox error.
+            try validateFlags()
 
-            let queryOverride = readsQueryFromStdin ? Self.readStandardInput() : nil
+            // Resolve the query (this may read stdin for `sx -`) and reject an empty
+            // one — done after the flag checks above so a bad flag never blocks here.
+            let queryOverride = readsQueryFromStdin ? await Self.readStandardInput() : nil
+            guard !(queryOverride ?? query.joined(separator: " "))
+                    .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw SxError(.usage, "no query given — pass search terms (e.g. sx \"swift concurrency\") or pipe them via sx -")
+            }
+
+            let config = try await Config.load()
             let options = try validatedSearchOptions(from: config, queryOverride: queryOverride)
 
             let format = OutputFormat.resolve(
@@ -326,22 +406,36 @@ public struct Sx: AsyncParsableCommand {
             // making any network call — a pure, side-effect-free preview.
             if dryRun {
                 stdout.write(Data(Self.dryRunPlan(
-                    engine: engine, config: config, options: options, format: format
+                    engine: engine, config: config, options: options,
+                    format: format, html: html, text: text
                 ).utf8))
                 return
             }
 
-            let manager = try SearchManager.make(from: config)
+            // Preflight the --output destination through the sandbox BEFORE any
+            // network work, so a denied path fails closed (exit 3) without spending
+            // backend/API quota or leaking the query. emitResults re-checks at write.
+            try await preflightOutputAuthorization()
 
+            // An explicit --engine must work even if the config's default/fallback
+            // engines are misconfigured, so build a manager whose primary IS the
+            // requested engine rather than validating the whole config.
             let outcome: SearchOutcome
             if let engine = engine {
+                let manager = try SearchManager(
+                    registry: SearchManager.makeRegistry(from: config),
+                    primary: engine, fallbacks: []
+                )
                 outcome = try await manager.searchExplicit(engine, options)
             } else {
+                let manager = try SearchManager.make(from: config)
                 outcome = try await manager.search(options)
             }
 
-            // Apply --first (top result only), then render.
-            let results = selectedResults(outcome.results)
+            // Shape the result set for rendering: drop URL-less results in URL modes,
+            // enforce --count, then apply --first. Order matters — see shapedResults.
+            let needsURL = html || text || format == .links
+            let results = shapedResults(outcome.results, needsURL: needsURL, count: options.numResults)
             let rendered: String
             if html || text {
                 // Content mode: fetch each page and output its content — extracted
@@ -372,15 +466,20 @@ public struct Sx: AsyncParsableCommand {
             // output was written, so a history failure is a note, not an error.
             do {
                 try await History.append(query: options.query, config: config)
-            } catch let historyError as SxError {
-                stderr.write(Data("sx: note: history not recorded — \(historyError.message)\n".utf8))
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                let message = (error as? SxError)?.message ?? "\(error)"
+                stderr.write(Data("sx: note: history not recorded — \(message)\n".utf8))
             }
 
-            // --fail-empty: signal "no results" with a distinct exit code, after
-            // emitting the (valid, possibly empty) output above.
-            if failEmpty && results.isEmpty {
+            // Always note empty results so an agent can tell an empty search from a
+            // silent/broken one; --fail-empty additionally sets exit code 4.
+            if results.isEmpty {
                 stderr.write(Data("sx: no results for query: \(options.query)\n".utf8))
-                throw ExitCode(SxExitCode.empty.rawValue)
+                if failEmpty {
+                    throw ExitCode(SxExitCode.empty.rawValue)
+                }
             }
         } catch let error as SxError {
             stderr.write(Data("sx: \(error.message)\n".utf8))

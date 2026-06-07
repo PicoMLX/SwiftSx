@@ -608,4 +608,252 @@ import Testing
         let result = HTMLExtractor.extract(html)
         #expect(result.contains("[Swift](https://swift.org)"))
     }
+
+    // MARK: - Review item 1: href must be a standalone attribute
+
+    /// An anchor whose only `href`-like attribute is `data-href` must NOT become a Markdown
+    /// link — `href` has to be its own attribute, not a suffix of another one.
+    @Test func dataHrefIsNotTreatedAsLink() {
+        let html = #"<body><a data-href="/tracking">Continue</a></body>"#
+        let result = HTMLExtractor.extract(html)
+        // Plain text is kept…
+        #expect(result.contains("Continue"))
+        // …but no Markdown link syntax is produced.
+        #expect(!result.contains("]("))
+        #expect(!result.contains("/tracking"))
+    }
+
+    /// A real `href` sitting next to a `data-href` must still produce a link to the real URL.
+    @Test func realHrefAlongsideDataHrefStillLinks() {
+        let html = #"<body><a data-href="/track" href="https://example.com">Go</a></body>"#
+        let result = HTMLExtractor.extract(html)
+        #expect(result.contains("[Go](https://example.com)"))
+        #expect(!result.contains("/track"))
+    }
+
+    /// Regression guard: the previously supported href forms (double/single quoted, spaces
+    /// around `=`, unquoted) must all keep working after the standalone-attribute tightening.
+    @Test func standaloneHrefStillMatchesAllSupportedForms() {
+        #expect(HTMLExtractor.extract(#"<body><a href="https://a.com">A</a></body>"#)
+            .contains("[A](https://a.com)"))
+        #expect(HTMLExtractor.extract("<body><a href='https://b.com'>B</a></body>")
+            .contains("[B](https://b.com)"))
+        #expect(HTMLExtractor.extract(#"<body><a href = "https://c.com">C</a></body>"#)
+            .contains("[C](https://c.com)"))
+        #expect(HTMLExtractor.extract("<body><a href=https://d.com>D</a></body>")
+            .contains("[D](https://d.com)"))
+        // href after another attribute must still match.
+        #expect(HTMLExtractor.extract(#"<body><a class="x" href="https://e.com">E</a></body>"#)
+            .contains("[E](https://e.com)"))
+    }
+
+    // MARK: - Review item 2: <br> with attributes is a line break
+
+    /// `<br class="…">` must still act as a line break, not be silently dropped.
+    @Test func brWithAttributesActsAsLineBreak() {
+        let html = #"<body>One<br class="mobile-break">Two</body>"#
+        let result = HTMLExtractor.extract(html)
+        // The two halves must not run together…
+        #expect(!result.contains("OneTwo"))
+        // …and must land on separate lines.
+        let lines = result
+            .components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        #expect(lines.contains("One"))
+        #expect(lines.contains("Two"))
+    }
+
+    /// `<br>` with attributes must not match a different tag that merely starts with `br`.
+    @Test func brMatcherDoesNotMatchOtherTags() {
+        // A hypothetical `<br…>`-prefixed custom element should not introduce a line break by
+        // virtue of the `<br>` rule. `<break>` content stays on a single line.
+        let html = "<body>Alpha<break>Beta</break></body>"
+        let result = HTMLExtractor.extract(html)
+        #expect(result.contains("AlphaBeta"))
+    }
+
+    // MARK: - Review item 3: table cells are separated
+
+    /// Adjacent table cells must be separated rather than concatenated.
+    @Test func tableCellsAreSeparated() {
+        let html = "<body><table><tr><td>A</td><td>B</td></tr></table></body>"
+        let result = HTMLExtractor.extract(html)
+        #expect(result.contains("A B"))
+        #expect(!result.contains("AB"))
+    }
+
+    /// Cells must stay separated even when `</td>`/`</tr>` end tags are omitted.
+    @Test func tableCellsSeparatedWithOmittedEndTags() {
+        let html = "<body><table><tr><td>A<td>B</tr></table></body>"
+        let result = HTMLExtractor.extract(html)
+        #expect(result.contains("A B"))
+        #expect(!result.contains("AB"))
+    }
+
+    /// Separate table rows must land on separate lines.
+    @Test func tableRowsAreSeparatedByNewlines() {
+        let html = "<body><table><tr><td>R1</td></tr><tr><td>R2</td></tr></table></body>"
+        let result = HTMLExtractor.extract(html)
+        #expect(result.contains("R1"))
+        #expect(result.contains("R2"))
+        #expect(!result.contains("R1R2"))
+        #expect(!result.contains("R1 R2"))
+        let lines = result
+            .components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        #expect(lines.contains("R1"))
+        #expect(lines.contains("R2"))
+    }
+
+    // MARK: - Review item 4: bullets preserved when </li> is omitted
+
+    /// HTML allows omitting `</li>`; bullets must still be produced for each item.
+    @Test func listItemsWithoutClosingTagsKeepBullets() {
+        let html = "<body><ul><li>One<li>Two</ul></body>"
+        let result = HTMLExtractor.extract(html)
+        #expect(result.contains("- One"))
+        #expect(result.contains("- Two"))
+        #expect(!result.contains("OneTwo"))
+    }
+
+    /// Ordered lists with omitted `</li>` must also keep bullets.
+    @Test func orderedListItemsWithoutClosingTagsKeepBullets() {
+        let html = "<body><ol><li>Alpha<li>Beta</ol></body>"
+        let result = HTMLExtractor.extract(html)
+        #expect(result.contains("- Alpha"))
+        #expect(result.contains("- Beta"))
+        #expect(!result.contains("AlphaBeta"))
+    }
+
+    /// A mix of explicit and omitted `</li>` end tags must be handled.
+    @Test func listItemsMixedClosingTagsKeepBullets() {
+        let html = "<body><ul><li>One</li><li>Two<li>Three</ul></body>"
+        let result = HTMLExtractor.extract(html)
+        #expect(result.contains("- One"))
+        #expect(result.contains("- Two"))
+        #expect(result.contains("- Three"))
+    }
+
+    // MARK: - Review item 5: list items inside blockquotes stay quoted
+
+    /// A list inside a blockquote must have its bullets prefixed with `> ` like the rest of the
+    /// quote, not rendered outside it.
+    @Test func listItemsInsideBlockquoteStayQuoted() {
+        let html = "<body><blockquote><ul><li>One</li></ul></blockquote></body>"
+        let result = HTMLExtractor.extract(html)
+        // The bullet must be quoted.
+        #expect(result.contains("> - One"))
+        // It must NOT appear as an unquoted bullet on its own line.
+        let hasUnquotedBullet = result
+            .components(separatedBy: "\n")
+            .contains { $0.hasPrefix("- One") }
+        #expect(!hasUnquotedBullet)
+    }
+
+    /// A multi-item list inside a blockquote keeps every bullet quoted.
+    @Test func multiItemListInsideBlockquoteStaysQuoted() {
+        let html = "<body><blockquote><ul><li>One</li><li>Two</li></ul></blockquote></body>"
+        let result = HTMLExtractor.extract(html)
+        #expect(result.contains("> - One"))
+        #expect(result.contains("> - Two"))
+    }
+
+    // MARK: - Review item 6: nested containers preserve the outer tail
+
+    /// When `<article>` elements are nested, the outer article's tail content (after the inner
+    /// `</article>`) must not be discarded.
+    @Test func nestedArticlesPreserveOuterTail() {
+        let html = "<article><article><h1>Inner</h1></article><p>Outer tail</p></article>"
+        let result = HTMLExtractor.extract(html)
+        #expect(result.contains("Inner"))
+        #expect(result.contains("Outer tail"))
+    }
+
+    /// Nested `<main>` elements must likewise preserve the outer tail.
+    @Test func nestedMainPreservesOuterTail() {
+        let html = "<main><main><h1>Inner</h1></main><p>Outer tail</p></main>"
+        let result = HTMLExtractor.extract(html)
+        #expect(result.contains("Inner"))
+        #expect(result.contains("Outer tail"))
+    }
+
+    /// Regression guard: a single, non-nested `<article>` must still be isolated from
+    /// surrounding chrome (the nesting heuristic must not change the common case).
+    @Test func singleArticleStillExcludesChromeAfterNestingFix() {
+        let html = """
+        <html>
+          <body>
+            <nav>Nav Chrome</nav>
+            <article>
+              <h1>Title</h1>
+              <p>Body text.</p>
+            </article>
+            <footer>Footer Chrome</footer>
+          </body>
+        </html>
+        """
+        let result = HTMLExtractor.extract(html)
+        #expect(result.contains("# Title"))
+        #expect(result.contains("Body text"))
+        #expect(!result.contains("Nav Chrome"))
+        #expect(!result.contains("Footer Chrome"))
+    }
+
+    // MARK: - Review item: literal angle brackets in prose
+
+    /// A literal `<` followed by whitespace/digits is text, not markup, so a comparison
+    /// like `2 < 3 and 4 > 1` must survive tag stripping intact.
+    @Test func literalLessThanInProseIsPreserved() {
+        let html = "<body><p>For all n, 2 < 3 and 4 > 1 holds.</p></body>"
+        let result = HTMLExtractor.extract(html)
+        #expect(result.contains("2 < 3 and 4 > 1"))
+    }
+
+    /// Real tags are still stripped even with the stricter tag-start requirement.
+    @Test func realTagsStillStrippedAlongsideLiteralLessThan() {
+        let html = "<body><p>a <span>b</span> c < d</p></body>"
+        let result = HTMLExtractor.extract(html)
+        #expect(!result.contains("<span>"))
+        #expect(result.contains("c < d"))
+    }
+
+    // MARK: - Review item: code fence sizing around embedded backticks
+
+    /// A `<pre>` block whose content contains a Markdown fence must be wrapped in a
+    /// longer fence so the embedded ``` cannot close the generated code block early.
+    @Test func preBlockWithEmbeddedFenceUsesLongerFence() {
+        let html = "<body><pre>```\ncode\n```</pre></body>"
+        let result = HTMLExtractor.extract(html)
+        // Outer fence must be at least 4 backticks (longer than the embedded run of 3).
+        #expect(result.contains("````"))
+    }
+
+    // MARK: - Review item: nested lists keep both bullets
+
+    /// A nested list must not collapse parent and child into one run. Indentation is
+    /// flattened (a best-effort-extractor limitation), but both bullets are preserved.
+    @Test func nestedListsKeepBothBullets() {
+        let html = "<body><ul><li>Parent<ul><li>Child</li></ul></li></ul></body>"
+        let result = HTMLExtractor.extract(html)
+        #expect(result.contains("Parent"))
+        #expect(result.contains("Child"))
+        #expect(!result.contains("ParentChild"))
+    }
+
+    // MARK: - Review item: balanced main-region scan (no sibling over-capture)
+
+    /// A nested `<article>` followed by a later sibling `<article>` must extract only the
+    /// first (outer) container — the depth-balanced scan stops at its true matching close,
+    /// so unrelated sibling content is not pulled in.
+    @Test func nestedArticleWithLaterSiblingDoesNotOvercapture() {
+        let html = "<body><article>Story<article>Nested</article>Tail</article>"
+            + "<article>UNRELATED SIBLING</article></body>"
+        let result = HTMLExtractor.extract(html)
+        #expect(result.contains("Story"))
+        #expect(result.contains("Nested"))
+        #expect(result.contains("Tail"))
+        #expect(!result.contains("UNRELATED SIBLING"))
+    }
 }

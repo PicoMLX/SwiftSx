@@ -26,17 +26,26 @@ extension SearchManager {
     /// - Throws: ``SxError`` with code `.usage` when `config.engine` or any
     ///   entry of `config.fallbackEngines` is not a known engine.
     public static func make(from config: Config) throws -> SearchManager {
-        let registry: [String: any SearchBackend] = [
+        try SearchManager(
+            registry: makeRegistry(from: config),
+            primary: config.engine,
+            fallbacks: config.fallbackEngines
+        )
+    }
+
+    /// Builds the registry of all known backends from `config`, without choosing a
+    /// primary or validating any engine names.
+    ///
+    /// The command layer uses this for an explicit `--engine` run, where the
+    /// config's default/fallback engines must not be validated (and so must not be
+    /// able to block a single-engine search).
+    public static func makeRegistry(from config: Config) -> [String: any SearchBackend] {
+        [
             "searxng": SearxngBackend.makeBackend(from: config),
             "brave":   BraveBackend.makeBrave(from: config),
             "tavily":  TavilyBackend.makeTavily(from: config),
             "exa":     ExaBackend.makeExa(from: config),
             "jina":    JinaBackend.makeJina(from: config),
         ]
-        return try SearchManager(
-            registry: registry,
-            primary: config.engine,
-            fallbacks: config.fallbackEngines
-        )
     }
 }

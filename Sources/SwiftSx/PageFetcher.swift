@@ -12,8 +12,8 @@ import FoundationNetworking
 /// (extracted) output modes: each result URL is fetched the same way, and every
 /// fetch is gated through the ShellKit sandbox by ``HTTPTransport``.
 ///
-/// Redirects are **not** followed (see ``init(timeout:)``): a 3xx to a host the
-/// sandbox would deny must not be retrieved transparently, so the redirect
+/// Redirects are **not** followed (see the initializers below): a 3xx to a host
+/// the sandbox would deny must not be retrieved transparently, so the redirect
 /// surfaces as an error and the agent can re-fetch the (separately authorized)
 /// target explicitly.
 public struct PageFetcher: Sendable {
@@ -24,7 +24,17 @@ public struct PageFetcher: Sendable {
 
     // MARK: - Init
 
-    public init(transport: HTTPTransport = HTTPTransport()) {
+    /// Creates a fetcher backed by a default **no-redirect** transport: a 3xx is
+    /// not followed, so a fetch can't bypass the sandbox by being redirected to an
+    /// un-authorized host. Use ``init(timeout:)`` to also apply a request timeout,
+    /// or ``init(transport:)`` to inject a transport (e.g. a mock) in tests.
+    public init() {
+        self.transport = HTTPTransport(session: Self.makeNoRedirectSession(timeout: nil))
+    }
+
+    /// Inject a transport directly — used by tests with a mock-backed session.
+    /// The caller owns the redirect policy of an injected transport.
+    public init(transport: HTTPTransport) {
         self.transport = transport
     }
 
@@ -32,15 +42,22 @@ public struct PageFetcher: Sendable {
     /// and **does not follow HTTP redirects**, so a 3xx can't bypass the sandbox
     /// by sending the fetch to an un-authorized host.
     public init(timeout: TimeInterval) {
+        self.transport = HTTPTransport(session: Self.makeNoRedirectSession(timeout: timeout))
+    }
+
+    /// Builds a `URLSession` that refuses to follow HTTP redirects, optionally
+    /// applying a per-request/-resource `timeout`.
+    private static func makeNoRedirectSession(timeout: TimeInterval?) -> URLSession {
         let configuration = URLSessionConfiguration.default
-        configuration.timeoutIntervalForRequest = timeout
-        configuration.timeoutIntervalForResource = timeout
-        let session = URLSession(
+        if let timeout {
+            configuration.timeoutIntervalForRequest = timeout
+            configuration.timeoutIntervalForResource = timeout
+        }
+        return URLSession(
             configuration: configuration,
             delegate: NoRedirectDelegate(),
             delegateQueue: nil
         )
-        self.transport = HTTPTransport(session: session)
     }
 
     /// A desktop-browser `User-Agent`, sent so pages that block obvious bots
@@ -52,18 +69,40 @@ public struct PageFetcher: Sendable {
 
     /// A secret-free description of a URL for diagnostics: `scheme://host/path`
     /// only, dropping any userinfo and query string (which can carry tokens).
-    static func redacted(_ urlString: String) -> String {
+    ///
+    /// Public so the command layer can redact result URLs in its own diagnostics.
+    public static func redacted(_ urlString: String) -> String {
         if let components = URLComponents(string: urlString),
            let host = components.host, !host.isEmpty {
             let scheme = components.scheme.map { "\($0)://" } ?? ""
             return "\(scheme)\(host)\(components.path)"
         }
-        // Unparseable or host-less input (e.g. "https://?token=secret"): still
-        // drop anything after the first '?' or '#' so a query/fragment can't leak.
-        if let cut = urlString.firstIndex(where: { $0 == "?" || $0 == "#" }) {
-            return String(urlString[..<cut])
+        // Unparseable or host-less input (e.g. "https://?token=secret" or
+        // "https://user:secret@"): strip userinfo (…@) and anything from the first
+        // '?'/'#', so credentials or a query/fragment can't leak into diagnostics.
+        var safe = urlString
+        if let at = safe.firstIndex(of: "@") {
+            let afterScheme = safe.range(of: "://")?.upperBound ?? safe.startIndex
+            safe.removeSubrange((afterScheme <= at ? afterScheme : safe.startIndex)...at)
         }
-        return urlString
+        if let cut = safe.firstIndex(where: { $0 == "?" || $0 == "#" }) {
+            safe = String(safe[..<cut])
+        }
+        return safe
+    }
+
+    /// `true` only for `URLError` codes that indicate the **whole network** is
+    /// unavailable (mapped to exit 7, and propagated even from a multi-page fetch).
+    /// Per-host failures — `timedOut`, `cannotFindHost`, `cannotConnectToHost`,
+    /// `dnsLookupFailed` — are deliberately excluded: in `--html`/`--text` one bad
+    /// result should skip that page, not abort the whole batch.
+    static func isNoNetwork(_ code: URLError.Code) -> Bool {
+        switch code {
+        case .notConnectedToInternet, .networkConnectionLost:
+            return true
+        default:
+            return false
+        }
     }
 
     // MARK: - Request building
@@ -115,12 +154,31 @@ public struct PageFetcher: Sendable {
             throw CancellationError()
         } catch let urlError as URLError where urlError.code == .cancelled {
             throw CancellationError()    // URLSession reports cancellation this way
+        } catch let urlError as URLError where Self.isNoNetwork(urlError.code) {
+            // No-network / infrastructure failure → exit 7, so the agent escalates
+            // (check connectivity) instead of retrying the same command.
+            throw SxError(.auth, "could not fetch \(Self.redacted(urlString)): \(urlError.localizedDescription)")
         } catch {
             throw SxError(.general, "could not fetch \(Self.redacted(urlString)): \(error)")
         }
 
         guard (200..<300).contains(response.status.code) else {
             throw SxError(.general, "fetch of \(Self.redacted(urlString)) returned HTTP \(response.status.code)")
+        }
+
+        // Refuse obviously-binary bodies: --html/--text expect markup, and
+        // decoding a PDF/image/zip/etc. as UTF-8 yields garbage. A missing
+        // Content-Type is allowed (let the caller decide); only a present,
+        // clearly non-textual media type is rejected.
+        if let contentType = response.headerFields[.contentType]?.lowercased() {
+            let mediaType = contentType.split(separator: ";").first.map(String.init) ?? contentType
+            let isTextual = mediaType.hasPrefix("text/")
+                || mediaType.contains("html")
+                || mediaType.contains("xml")
+                || mediaType.contains("json")
+            if !isTextual {
+                throw SxError(.general, "fetch of \(Self.redacted(urlString)) returned non-text content (\(mediaType))")
+            }
         }
 
         return String(decoding: data, as: UTF8.self)

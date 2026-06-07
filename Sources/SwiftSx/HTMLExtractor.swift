@@ -15,13 +15,16 @@ public enum HTMLExtractor {
     /// 1. Protect `<pre>` blocks with placeholder tokens.
     /// 2. Strip non-content regions (`<script>`, `<style>`, `<head>`, etc.).
     /// 3. Pick the main content region (`<article>` > `<main>` > `<body>` > whole string).
-    /// 4. Convert `<br>` and `<p>` block tags to newlines (needed before blockquote handling).
-    /// 5. Convert blockquote blocks, prefixing each inner line with `> `.
-    /// 6. Convert remaining block and inline tags to Markdown equivalents.
-    /// 7. Strip all remaining HTML tags.
-    /// 8. Decode HTML entities.
-    /// 9. Normalise whitespace.
-    /// 10. Restore `<pre>` placeholders as fenced code blocks.
+    /// 4. Convert list items (`<li>`) to `- ` bullets — done before blockquote handling so
+    ///    that list items inside a blockquote are prefixed with `> ` like the rest, and before
+    ///    `<ul>`/`<ol>` are turned into blank lines so omitted `</li>` tags terminate correctly.
+    /// 5. Convert `<br>` and `<p>` block tags to newlines (needed before blockquote handling).
+    /// 6. Convert blockquote blocks, prefixing each inner line with `> `.
+    /// 7. Convert remaining block and inline tags to Markdown equivalents.
+    /// 8. Strip all remaining HTML tags.
+    /// 9. Decode HTML entities.
+    /// 10. Normalise whitespace.
+    /// 11. Restore `<pre>` placeholders as fenced code blocks.
     ///
     /// - Parameter html: The raw HTML string to process.
     /// - Returns: Clean Markdown-ish text, or an empty string for empty input.
@@ -40,27 +43,33 @@ public enum HTMLExtractor {
         // Step 3: Pick the main content region.
         result = pickMainRegion(result)
 
-        // Step 4: Convert <br> and paragraph/block tags to newlines first
+        // Step 4: Convert <li> items to "- " bullets. Runs before blockquote conversion (so
+        //         bulleted items inside a blockquote get the "> " prefix) and before the
+        //         <ul>/<ol> openers/closers become blank lines (so the list-close tags can
+        //         terminate an item whose </li> was omitted).
+        result = convertListItems(result)
+
+        // Step 5: Convert <br> and paragraph/block tags to newlines
         //         so that blockquote inner text is already line-broken.
         result = convertBrAndParagraphTags(result)
 
-        // Step 5: Convert blockquotes (after inner <p>/<br> have become newlines).
+        // Step 6: Convert blockquotes (after inner <li>/<p>/<br> have been converted).
         result = convertBlockquotes(result)
 
-        // Step 6: Convert remaining block and inline tags.
+        // Step 7: Convert remaining block and inline tags.
         result = convertBlockTags(result)
         result = convertInlineTags(result)
 
-        // Step 7: Strip remaining HTML tags.
+        // Step 8: Strip remaining HTML tags.
         result = stripRemainingTags(result)
 
-        // Step 8: Decode HTML entities.
+        // Step 9: Decode HTML entities.
         result = decodeEntities(result)
 
-        // Step 9: Normalise whitespace.
+        // Step 10: Normalise whitespace.
         result = normaliseWhitespace(result)
 
-        // Step 10: Restore <pre> blocks as fenced code blocks.
+        // Step 11: Restore <pre> blocks as fenced code blocks.
         result = restorePreBlocks(result, captured: preBlocks)
 
         return result
@@ -101,22 +110,29 @@ public enum HTMLExtractor {
     nonisolated(unsafe) private static let reHtmlComment: NSRegularExpression =
         makeREDotAll("<!--[\\s\\S]*?-->")
 
-    // Main-region extraction
+    // Main-region extraction.
+    // `<article>`/`<main>` use a depth-balanced scan (see `extractBalancedRegion`) over a
+    // combined opener/closer regex: group 1 captures "/" for a closer and "" for an opener,
+    // so nesting is balanced and the FIRST container's true matching close terminates the
+    // region — no dropped outer tail, and no over-capture into a later sibling.
     // `(?=[\s>/])` handles attributes that wrap across lines, e.g. `<article\n  class="post">`.
-    nonisolated(unsafe) private static let reInnerArticle: NSRegularExpression =
-        makeREDotAll("<article(?=[\\s>/])[^>]*>([\\s\\S]*?)</article>")
-    nonisolated(unsafe) private static let reInnerMain: NSRegularExpression =
-        makeREDotAll("<main(?=[\\s>/])[^>]*>([\\s\\S]*?)</main>")
+    nonisolated(unsafe) private static let reArticleBoundary: NSRegularExpression =
+        makeREDotAll("<(/?)article(?=[\\s>/])[^>]*>")
+    nonisolated(unsafe) private static let reMainBoundary: NSRegularExpression =
+        makeREDotAll("<(/?)main(?=[\\s>/])[^>]*>")
+    // `<body>` is matched lazily — a document has a single body, so there is no nesting.
     nonisolated(unsafe) private static let reInnerBody: NSRegularExpression =
         makeREDotAll("<body(?=[\\s>/])[^>]*>([\\s\\S]*?)</body>")
 
     // <br> → newline
+    // `(?=[\s/>])` keeps the tag-boundary guard (so `<break>` is not matched) while
+    // `[^>]*` allows attributes, e.g. `<br class="mobile-break">` and `<br />`.
     nonisolated(unsafe) private static let reBr: NSRegularExpression =
-        makeRE("<br\\s*/?>")
+        makeRE("<br(?=[\\s/>])[^>]*>")
 
     // Opening block tags → blank line separator (single combined pass).
     // `(?=[\s>/])` keeps the tag-boundary guard so e.g. `<paragraph>` is not matched.
-    // `<li>` is intentionally excluded because `reLi` handles the full `<li>…</li>` block.
+    // `<li>` is intentionally excluded because `reLi`/`convertListItems` already handle items.
     nonisolated(unsafe) private static let reBlockOpeners: NSRegularExpression =
         makeRE("<(p|div|section|article|main|header|footer|nav|ul|ol)(?=[\\s>/])[^>]*>")
 
@@ -128,9 +144,32 @@ public enum HTMLExtractor {
     nonisolated(unsafe) private static let reBlockquote: NSRegularExpression =
         makeREDotAll("<blockquote(?=[\\s>/])[^>]*>([\\s\\S]*?)</blockquote>")
 
-    // List items
+    // List items.
+    // HTML permits the `</li>` end tag to be omitted, so an item is terminated by any of:
+    //   * an explicit `</li>` (consumed),
+    //   * the next `<li …>` opener (kept — it starts the following item),
+    //   * the enclosing `</ul>` / `</ol>` close (kept — handled by the block-closer pass), or
+    //   * end of input.
+    // The capture is lazy so it stops at the FIRST terminator. `reLi` runs BEFORE the
+    // `<ul>`/`<ol>` openers/closers are turned into blank lines, so the list-close terminators
+    // are still present in the string at match time.
     nonisolated(unsafe) private static let reLi: NSRegularExpression =
-        makeREDotAll("<li(?=[\\s>/])[^>]*>([\\s\\S]*?)</li>")
+        makeREDotAll("<li(?=[\\s>/])[^>]*>([\\s\\S]*?)(?:</li\\s*>|(?=<li[\\s>/])|(?=</ul[\\s>])|(?=</ol[\\s>])|$)")
+
+    // Table cells / rows.
+    // Without explicit boundaries, adjacent cells (`<td>A</td><td>B</td>`) collapse to "AB"
+    // once the generic tag-strip runs. Insert a tab between cells (collapsed to a single space
+    // by whitespace normalisation) and a newline per row. Both openers and closers are handled
+    // so cells stay separated even when `</td>`/`</tr>` end tags are omitted.
+    // `<t[dh]`/`<tr` with the `(?=[\s>/])` guard does not match `<table>`/`<thead>`/`<tbody>`.
+    nonisolated(unsafe) private static let reTableCellOpen: NSRegularExpression =
+        makeRE("<t[dh](?=[\\s>/])[^>]*>")
+    nonisolated(unsafe) private static let reTableCellClose: NSRegularExpression =
+        makeRE("</t[dh]\\s*>")
+    nonisolated(unsafe) private static let reTableRowOpen: NSRegularExpression =
+        makeRE("<tr(?=[\\s>/])[^>]*>")
+    nonisolated(unsafe) private static let reTableRowClose: NSRegularExpression =
+        makeRE("</tr\\s*>")
 
     // Headings: (regex, marker) pairs — built once.
     // `(?=[\s>])` handles newlines in attributes while still rejecting e.g. `<h10>`
@@ -171,15 +210,22 @@ public enum HTMLExtractor {
     //   href = "url"   (spaces around =) — handled by \s* between href, = and value
     // Link text is capture group 4.
     // `(?=[\s>])` on the opening <a …> tag boundary.
+    // `\shref` requires a whitespace boundary before `href`, so it is matched only as a
+    // standalone attribute name — `data-href`, `x-href`, etc. (no whitespace before `href`)
+    // are NOT treated as links. The whitespace is mandatory anyway: a real `href` can never be
+    // the first token after `<a`.
     nonisolated(unsafe) private static let reLinkWithHref: NSRegularExpression =
-        makeREDotAll("<a(?=[\\s>])[^>]+href\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))[^>]*>([\\s\\S]*?)</a>")
+        makeREDotAll("<a(?=[\\s>])[^>]*\\shref\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))[^>]*>([\\s\\S]*?)</a>")
 
     nonisolated(unsafe) private static let reLinkNoHref: NSRegularExpression =
         makeREDotAll("<a(?=[\\s>])[^>]*>([\\s\\S]*?)</a>")
 
-    // Strip remaining tags
+    // Strip remaining tags.
+    // Requires a tag-name-like start (`<tag`, `</tag`, or `<!`…) so a literal `<`
+    // followed by whitespace or a digit (e.g. `2 < 3 and 4 > 1`, `<3`) is kept as
+    // text instead of being eaten as if it were markup — matching browser parsing.
     nonisolated(unsafe) private static let reAnyTag: NSRegularExpression =
-        makeRE("<[^>]+>", options: [])
+        makeRE("</?[a-zA-Z!][^>]*>", options: [])
 
     // Whitespace normalisation
     nonisolated(unsafe) private static let reHorizontalWS: NSRegularExpression =
@@ -280,7 +326,14 @@ public enum HTMLExtractor {
             // re-interpreted as tag delimiters.
             inner = decodeEntities(inner)
 
-            let fenced = "\n```\n\(inner)\n```\n"
+            // Size the fence longer than any backtick run inside the code, so an
+            // embedded ``` (e.g. a page showing a Markdown example) can't close it early.
+            var maxRun = 0, run = 0
+            for ch in inner {
+                if ch == "`" { run += 1; maxRun = max(maxRun, run) } else { run = 0 }
+            }
+            let fence = String(repeating: "`", count: max(3, maxRun + 1))
+            let fenced = "\n\(fence)\n\(inner)\n\(fence)\n"
             result = result.replacingOccurrences(of: placeholder, with: fenced)
         }
         return result
@@ -311,14 +364,60 @@ public enum HTMLExtractor {
     /// Picks the main content region from the stripped HTML.
     ///
     /// Preference order: `<article>` > `<main>` > `<body>` > whole string.
+    ///
+    /// `<article>` and `<main>` use `extractBalancedRegion(...)`, a depth-aware scan that pairs
+    /// nested same-name containers correctly: the FIRST container's true matching close ends the
+    /// region, so neither the outer tail is dropped (a lazy match's failure) nor is a later
+    /// sibling container captured (a greedy match's failure). `<body>` is matched lazily — a
+    /// document has a single `<body>`, so there is no nesting to balance.
     private static func pickMainRegion(_ s: String) -> String {
-        let candidates = [(reInnerArticle, "article"), (reInnerMain, "main"), (reInnerBody, "body")]
-        for (re, _) in candidates {
-            if let inner = extractInner(re: re, from: s) {
-                return inner
-            }
+        if let inner = extractBalancedRegion(boundary: reArticleBoundary, from: s) {
+            return inner
+        }
+        if let inner = extractBalancedRegion(boundary: reMainBoundary, from: s) {
+            return inner
+        }
+        if let inner = extractInner(re: reInnerBody, from: s) {
+            return inner
         }
         return s
+    }
+
+    /// Extracts the inner HTML of the FIRST container delimited by `boundary` — a combined
+    /// opener/closer regex whose capture group 1 is `"/"` for a closing tag and `""` for an
+    /// opening tag — using a depth-balanced scan.
+    ///
+    /// Walking the boundary matches in order and tracking nesting depth, the closing tag that
+    /// returns the depth to zero is the first container's *true* match and terminates the region.
+    /// This avoids both regex failure modes: a lazy match drops the outer tail when the container
+    /// is nested, and a greedy match over-captures into a later sibling container.
+    ///
+    /// - Returns: The inner HTML, or `nil` when there is no opener or the tags never balance
+    ///   (so `pickMainRegion` falls through to the next candidate).
+    private static func extractBalancedRegion(boundary: NSRegularExpression, from s: String) -> String? {
+        let ns = s as NSString
+        let matches = boundary.matches(in: s, range: NSRange(location: 0, length: ns.length))
+        var depth = 0
+        var contentStart: Int? = nil
+        for m in matches {
+            let isCloser = m.range(at: 1).length == 1   // group 1 == "/" → closing tag
+            if contentStart == nil {
+                if isCloser { continue }                // ignore stray closers before any opener
+                depth = 1
+                contentStart = m.range.location + m.range.length
+            } else if isCloser {
+                depth -= 1
+                if depth == 0 {
+                    let start = contentStart!
+                    let end = m.range.location
+                    guard end >= start else { return nil }
+                    return ns.substring(with: NSRange(location: start, length: end - start))
+                }
+            } else {
+                depth += 1
+            }
+        }
+        return nil
     }
 
     /// Extracts the inner HTML of the first match for `re` (capture group 1).
@@ -330,6 +429,28 @@ public enum HTMLExtractor {
             return nil
         }
         return String(s[captureRange])
+    }
+
+    // MARK: - List-item conversion (pre-blockquote)
+
+    /// Converts `<li>` items to `- ` Markdown bullets.
+    ///
+    /// Runs early in the pipeline (before blockquote conversion and before `<ul>`/`<ol>` are
+    /// turned into blank lines) for two reasons:
+    /// 1. A list nested inside a `<blockquote>` is converted to bullets *before* the blockquote
+    ///    pass, so each bullet line receives the `> ` prefix like surrounding quoted text.
+    /// 2. The `</ul>`/`</ol>` closers are still present, so `reLi` can use them (and the next
+    ///    `<li>` opener) to terminate an item whose `</li>` end tag was omitted — HTML allows
+    ///    `<ul><li>One<li>Two</ul>`.
+    ///
+    /// Each item becomes `\n- <content>`; the surrounding `<ul>`/`<ol>` tags are left in place
+    /// and handled by the later block-opener/closer pass.
+    private static func convertListItems(_ s: String) -> String {
+        return reLi.stringByReplacingMatches(
+            in: s,
+            range: NSRange(s.startIndex..., in: s),
+            withTemplate: "\n- $1"
+        )
     }
 
     // MARK: - Block-tag conversion (pre-blockquote: <br> and paragraph tags only)
@@ -417,18 +538,33 @@ public enum HTMLExtractor {
 
     /// Converts remaining block-level HTML tags to their Markdown equivalents.
     ///
-    /// Handles headings and list items. (`<br>` and closing block tags are already
-    /// handled by `convertBrAndParagraphTags`; `<pre>` blocks are protected by
-    /// `protectPreBlocks` and restored at the end.)
+    /// Handles table cell/row separators and headings. (List items are converted earlier by
+    /// `convertListItems`; `<br>` and closing block tags by `convertBrAndParagraphTags`;
+    /// `<pre>` blocks are protected by `protectPreBlocks` and restored at the end.)
+    ///
+    /// Table cells are separated with a tab — collapsed to a single space by whitespace
+    /// normalisation — and rows with a newline, so `<td>A</td><td>B</td>` renders as `A B`
+    /// instead of `AB`. This must run before the generic tag-strip pass.
     private static func convertBlockTags(_ s: String) -> String {
         var result = s
 
-        // <li>…</li> → "- …"
-        result = reLi.stringByReplacingMatches(
-            in: result,
-            range: NSRange(result.startIndex..., in: result),
-            withTemplate: "\n- $1"
-        )
+        // Table rows → newline boundaries (openers and closers both, to survive omitted tags).
+        for re in [reTableRowOpen, reTableRowClose] {
+            result = re.stringByReplacingMatches(
+                in: result,
+                range: NSRange(result.startIndex..., in: result),
+                withTemplate: "\n"
+            )
+        }
+
+        // Table cells → tab separators (openers and closers both).
+        for re in [reTableCellOpen, reTableCellClose] {
+            result = re.stringByReplacingMatches(
+                in: result,
+                range: NSRange(result.startIndex..., in: result),
+                withTemplate: "\t"
+            )
+        }
 
         // Headings h1–h6: opening tag → Markdown prefix.
         for (openRE, closeRE, marker) in headingPatterns {
