@@ -286,6 +286,29 @@ private func tavilyItem(
         let dict = decodeTavilyBody(body)
         #expect(dict["topic"] == nil)
     }
+
+    // MARK: safe_search
+
+    @Test func bodySafeSearchSentWithConfiguredLevel() throws {
+        let options = SearchOptions(query: "test", safeSearch: "strict")
+        let (_, body) = try backend.makeRequest(options)
+        let dict = decodeTavilyBody(body)
+        #expect(dict["safe_search"] as? String == "strict")
+    }
+
+    @Test func bodySafeSearchReflectsOffLevel() throws {
+        let options = SearchOptions(query: "test", safeSearch: "off")
+        let (_, body) = try backend.makeRequest(options)
+        let dict = decodeTavilyBody(body)
+        #expect(dict["safe_search"] as? String == "off")
+    }
+
+    @Test func bodySafeSearchAbsentWhenLevelEmpty() throws {
+        let options = SearchOptions(query: "test", safeSearch: "")
+        let (_, body) = try backend.makeRequest(options)
+        let dict = decodeTavilyBody(body)
+        #expect(dict["safe_search"] == nil)
+    }
 }
 
 // MARK: - isAvailable

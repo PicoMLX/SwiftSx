@@ -9,9 +9,13 @@ import FoundationNetworking
 
 /// The JSON envelope returned by the Brave Search `/web/search` endpoint.
 private struct BraveResponse: Decodable {
-    let web: Web?
+    let web: Section?
+    let news: Section?
+    let videos: Section?
 
-    struct Web: Decodable {
+    /// A result section (`web`, `news`, or `videos`). Each carries a `results`
+    /// array of items sharing the same title/url/description shape.
+    struct Section: Decodable {
         let results: [Item]?
     }
 
@@ -92,7 +96,13 @@ public struct BraveBackend: SearchBackend {
         case 200...299:
             do {
                 let decoded = try JSONDecoder().decode(BraveResponse.self, from: data)
-                return (decoded.web?.results ?? []).map { item in
+                // Merge results across the sections Brave returned (web, then
+                // news, then videos), preserving order, so category filters that
+                // surface news/video results are honored.
+                let items = (decoded.web?.results    ?? [])
+                          + (decoded.news?.results   ?? [])
+                          + (decoded.videos?.results ?? [])
+                return items.map { item in
                     SearchResult(
                         title:   item.title       ?? "",
                         url:     item.url         ?? "",
@@ -210,6 +220,23 @@ public struct BraveBackend: SearchBackend {
             if let freshness {
                 queryItems.append(URLQueryItem(name: "freshness", value: freshness))
             }
+        }
+
+        // result_filter — map requested categories to Brave's result types so
+        // the corresponding response sections are returned (and decoded).
+        let resultFilters: [String] = options.categories.compactMap { category in
+            switch category {
+            case "news":            return "news"
+            case "videos", "video": return "videos"
+            case "general", "web":  return "web"
+            default:                return nil
+            }
+        }
+        if !resultFilters.isEmpty {
+            // De-duplicate while preserving order.
+            var seen = Set<String>()
+            let unique = resultFilters.filter { seen.insert($0).inserted }
+            queryItems.append(URLQueryItem(name: "result_filter", value: unique.joined(separator: ",")))
         }
 
         var components = URLComponents(string: "https://api.search.brave.com/res/v1/web/search")

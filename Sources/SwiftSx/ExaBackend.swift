@@ -17,10 +17,28 @@ private struct ExaAPIRequest: Encodable {
     /// metadata (title/url) — no `text` or `summary` — so every mapped snippet
     /// would be empty. Asking for `text` populates the field the mapper reads.
     let contents: Contents
+    /// Domain allow-list (Exa's `includeDomains`). When set, Exa restricts
+    /// results to these domains — preferred over a lexical `site:` query prefix.
+    let includeDomains: [String]?
 
     /// The `contents` sub-object; `text: true` asks Exa to include page text.
     struct Contents: Encodable {
         let text: Bool
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case query
+        case numResults
+        case contents
+        case includeDomains
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(query, forKey: .query)
+        try container.encode(numResults, forKey: .numResults)
+        try container.encode(contents, forKey: .contents)
+        try container.encodeIfPresent(includeDomains, forKey: .includeDomains)
     }
 }
 
@@ -275,25 +293,28 @@ public struct ExaBackend: SearchBackend {
             )
         }
 
-        // q — prefix site: when options.site is non-empty.
-        let queryString: String
-        if options.site.isEmpty {
-            queryString = options.query
-        } else {
-            queryString = "site:\(options.site) \(options.query)"
-        }
+        // site restriction — use Exa's `includeDomains` allow-list rather than a
+        // lexical `site:` query prefix.
+        let includeDomains: [String]? = options.site.isEmpty ? nil : [options.site]
 
-        // numResults resolution: options > backend default > 10.
-        let n: Int
+        // numResults resolution: options > backend default > 10, then clamp to
+        // Exa's documented maximum of 100.
+        let resolved: Int
         if options.numResults > 0 {
-            n = options.numResults
+            resolved = options.numResults
         } else if numResults > 0 {
-            n = numResults
+            resolved = numResults
         } else {
-            n = 10
+            resolved = 10
         }
+        let n = min(resolved, 100)
 
-        let requestBody = ExaAPIRequest(query: queryString, numResults: n, contents: .init(text: true))
+        let requestBody = ExaAPIRequest(
+            query: options.query,
+            numResults: n,
+            contents: .init(text: true),
+            includeDomains: includeDomains
+        )
         let bodyData: Data
         do {
             bodyData = try JSONEncoder().encode(requestBody)

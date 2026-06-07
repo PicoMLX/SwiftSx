@@ -20,6 +20,12 @@ private struct TavilyRequest: Encodable {
     let timeRange: String?
     /// Optional topic / category filter (`news`, `finance`; omit for `general`).
     let topic: String?
+    /// Optional safe-search level (`off`/`moderate`/`strict`).
+    ///
+    /// Tavily's public API does not document a safe-search parameter; this is
+    /// forwarded best-effort (Tavily ignores unknown fields). Sent only when a
+    /// level is configured.
+    let safeSearch: String?
 
     enum CodingKeys: String, CodingKey {
         case query             = "query"
@@ -30,6 +36,7 @@ private struct TavilyRequest: Encodable {
         case includeDomains    = "include_domains"
         case timeRange         = "time_range"
         case topic             = "topic"
+        case safeSearch        = "safe_search"
     }
 
     func encode(to encoder: Encoder) throws {
@@ -42,6 +49,7 @@ private struct TavilyRequest: Encodable {
         try container.encodeIfPresent(includeDomains, forKey: .includeDomains)
         try container.encodeIfPresent(timeRange,      forKey: .timeRange)
         try container.encodeIfPresent(topic,          forKey: .topic)
+        try container.encodeIfPresent(safeSearch,     forKey: .safeSearch)
     }
 }
 
@@ -302,6 +310,11 @@ public struct TavilyBackend: SearchBackend {
             topic = nil
         }
 
+        // safe_search — forwarded best-effort (Tavily does not document a
+        // safe-search parameter; ignored by Tavily if unsupported). Sent only
+        // when a level is configured.
+        let safeSearch: String? = options.safeSearch.isEmpty ? nil : options.safeSearch
+
         let requestBody = TavilyRequest(
             query:             queryString,
             searchDepth:       searchDepth,
@@ -310,7 +323,8 @@ public struct TavilyBackend: SearchBackend {
             includeAnswer:     includeAnswer,
             includeDomains:    includeDomains,
             timeRange:         timeRange,
-            topic:             topic
+            topic:             topic,
+            safeSearch:        safeSearch
         )
 
         let bodyData: Data

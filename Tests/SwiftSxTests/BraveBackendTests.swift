@@ -306,6 +306,43 @@ private func braveJSON(results: [[String: String]] = []) -> Data {
         #expect(params["freshness"] == nil)
     }
 
+    // MARK: result_filter (categories → result_filter)
+
+    @Test func resultFilterFromNewsCategory() throws {
+        let options = SearchOptions(query: "test", categories: ["news"])
+        let req = try backend.makeRequest(options)
+        let params = parseBraveQuery(req.url?.absoluteString ?? "")
+        #expect(params["result_filter"] == "news")
+    }
+
+    @Test func resultFilterFromVideosCategory() throws {
+        let options = SearchOptions(query: "test", categories: ["videos"])
+        let req = try backend.makeRequest(options)
+        let params = parseBraveQuery(req.url?.absoluteString ?? "")
+        #expect(params["result_filter"] == "videos")
+    }
+
+    @Test func resultFilterCombinesCategoriesPreservingOrder() throws {
+        let options = SearchOptions(query: "test", categories: ["news", "videos"])
+        let req = try backend.makeRequest(options)
+        let params = parseBraveQuery(req.url?.absoluteString ?? "")
+        #expect(params["result_filter"] == "news,videos")
+    }
+
+    @Test func resultFilterAbsentWhenCategoriesEmpty() throws {
+        let options = SearchOptions(query: "test", categories: [])
+        let req = try backend.makeRequest(options)
+        let params = parseBraveQuery(req.url?.absoluteString ?? "")
+        #expect(params["result_filter"] == nil)
+    }
+
+    @Test func resultFilterOmitsUnknownCategories() throws {
+        let options = SearchOptions(query: "test", categories: ["science"])
+        let req = try backend.makeRequest(options)
+        let params = parseBraveQuery(req.url?.absoluteString ?? "")
+        #expect(params["result_filter"] == nil)
+    }
+
     // MARK: endpoint
 
     @Test func endpointIsCorrect() throws {
@@ -418,6 +455,24 @@ struct BraveSearchTests {
 
         let results = try await backend.search(SearchOptions(query: "test"))
         #expect(results.isEmpty)
+    }
+
+    @Test func decodesNewsAndVideosSections() async throws {
+        let backend = makeBackend()
+        // Brave returns separate web/news/videos sections; all should be merged
+        // (web, then news, then videos), preserving order.
+        let body = Data("""
+        {
+          "web":    {"results": [{"title": "W", "url": "https://w.com", "description": "web"}]},
+          "news":   {"results": [{"title": "N", "url": "https://n.com", "description": "news"}]},
+          "videos": {"results": [{"title": "V", "url": "https://v.com", "description": "vid"}]}
+        }
+        """.utf8)
+        setHandler(status: 200, body: body)
+
+        let results = try await backend.search(SearchOptions(query: "test"))
+        #expect(results.count == 3)
+        #expect(results.map(\.title) == ["W", "N", "V"])
     }
 
     @Test func status201AlsoDecodes() async throws {
