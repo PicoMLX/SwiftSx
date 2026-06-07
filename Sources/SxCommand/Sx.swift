@@ -50,6 +50,27 @@ public struct Sx: AsyncParsableCommand {
             help: "Maximum number of results to return.")
     public var count: Int?
 
+    @Option(name: .long, help: "Restrict results to a site or domain, e.g. github.com.")
+    public var site: String?
+
+    @Option(name: .customLong("time-range"),
+            help: "Recency filter passed to the engine: day, week, month, or year.")
+    public var timeRange: String?
+
+    @Option(name: [.customShort("p"), .long], help: "1-indexed result page.")
+    public var page: Int?
+
+    @Option(name: .customLong("safe-search"),
+            help: "Safe-search level: strict, moderate, or off.")
+    public var safeSearch: String?
+
+    @Option(name: [.customShort("c"), .customLong("category")],
+            help: "Result category (repeatable), e.g. general, news, images.")
+    public var category: [String] = []
+
+    @Option(name: [.customShort("l"), .long], help: "Language/locale code, e.g. en-US.")
+    public var language: String?
+
     // MARK: Plain-output UX
 
     @Flag(name: .customLong("no-color"), help: "Disable ANSI colour in plain output.")
@@ -73,11 +94,36 @@ public struct Sx: AsyncParsableCommand {
     // MARK: - Pure helpers (testable without I/O)
 
     /// Builds the ``SearchOptions`` for this invocation by overlaying the parsed
-    /// flags onto the config's defaults.
+    /// flags onto the config's defaults. Pure (no validation, no I/O) so it can be
+    /// reused by `--dry-run` and unit-tested directly.
     func searchOptions(from config: Config) -> SearchOptions {
         var options = config.baseSearchOptions()
         options.query = query.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
         if let count = count { options.numResults = count }
+        if let site = site { options.site = site }
+        if let timeRange = timeRange { options.timeRange = timeRange }
+        if let page = page { options.pageNo = page }
+        if let safeSearch = safeSearch { options.safeSearch = safeSearch }
+        if !category.isEmpty { options.categories = category }
+        if let language = language { options.language = language }
+        return options
+    }
+
+    /// Builds and validates the ``SearchOptions`` for this invocation.
+    ///
+    /// Rejects the unambiguously-wrong inputs an agent can fix from the message:
+    /// an empty query and a non-positive `--page`. Other tuning values are left
+    /// for the backends to interpret (they vary by engine).
+    ///
+    /// - Throws: ``SxError`` with code `.usage` for an empty query or `page < 1`.
+    func validatedSearchOptions(from config: Config) throws -> SearchOptions {
+        let options = searchOptions(from: config)
+        guard !options.query.isEmpty else {
+            throw SxError(.usage, "no query given — pass one or more search terms, e.g. sx \"swift concurrency\"")
+        }
+        guard options.pageNo >= 1 else {
+            throw SxError(.usage, "--page must be 1 or greater (got \(options.pageNo))")
+        }
         return options
     }
 
@@ -100,8 +146,20 @@ public struct Sx: AsyncParsableCommand {
         }
         lines.append("  query:      \(options.query)")
         lines.append("  results:    \(options.numResults)")
+        if !options.site.isEmpty {
+            lines.append("  site:       \(options.site)")
+        }
+        if !options.timeRange.isEmpty {
+            lines.append("  time-range: \(options.timeRange)")
+        }
+        if options.pageNo != 1 {
+            lines.append("  page:       \(options.pageNo)")
+        }
         if !options.categories.isEmpty {
             lines.append("  categories: \(options.categories.joined(separator: ", "))")
+        }
+        if !options.language.isEmpty {
+            lines.append("  language:   \(options.language)")
         }
         lines.append("  format:     \(format.label)")
         return lines.joined(separator: "\n") + "\n"
@@ -116,10 +174,7 @@ public struct Sx: AsyncParsableCommand {
         do {
             let config = try await Config.load()
 
-            let options = searchOptions(from: config)
-            guard !options.query.isEmpty else {
-                throw SxError(.usage, "no query given — pass one or more search terms, e.g. sx \"swift concurrency\"")
-            }
+            let options = try validatedSearchOptions(from: config)
 
             let format = OutputFormat.resolve(
                 json: json, clean: clean, links: links, configDefault: config.defaultOutput
