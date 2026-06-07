@@ -24,7 +24,7 @@ public struct Sx: AsyncParsableCommand {
 
     // MARK: Arguments
 
-    @Argument(help: "The search query (one or more terms).")
+    @Argument(help: "The search query (one or more terms; use - to read the query from stdin).")
     public var query: [String] = []
 
     // MARK: Engine selection
@@ -99,12 +99,21 @@ public struct Sx: AsyncParsableCommand {
 
     // MARK: - Pure helpers (testable without I/O)
 
+    /// Whether the query should be read from standard input — the `-` argument
+    /// convention (`echo "swift concurrency" | sx -`).
+    var readsQueryFromStdin: Bool { query == ["-"] }
+
     /// Builds the ``SearchOptions`` for this invocation by overlaying the parsed
     /// flags onto the config's defaults. Pure (no validation, no I/O) so it can be
     /// reused by `--dry-run` and unit-tested directly.
-    func searchOptions(from config: Config) -> SearchOptions {
+    ///
+    /// - Parameter queryOverride: When non-nil, used as the query instead of the
+    ///   joined positional arguments (the command supplies the stdin text here
+    ///   for `sx -`).
+    func searchOptions(from config: Config, queryOverride: String? = nil) -> SearchOptions {
         var options = config.baseSearchOptions()
-        options.query = query.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawQuery = queryOverride ?? query.joined(separator: " ")
+        options.query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         if let count = count { options.numResults = count }
         if let site = site { options.site = site }
         if let timeRange = timeRange { options.timeRange = timeRange }
@@ -122,10 +131,10 @@ public struct Sx: AsyncParsableCommand {
     /// for the backends to interpret (they vary by engine).
     ///
     /// - Throws: ``SxError`` with code `.usage` for an empty query or `page < 1`.
-    func validatedSearchOptions(from config: Config) throws -> SearchOptions {
-        let options = searchOptions(from: config)
+    func validatedSearchOptions(from config: Config, queryOverride: String? = nil) throws -> SearchOptions {
+        let options = searchOptions(from: config, queryOverride: queryOverride)
         guard !options.query.isEmpty else {
-            throw SxError(.usage, "no query given — pass one or more search terms, e.g. sx \"swift concurrency\"")
+            throw SxError(.usage, "no query given — pass search terms (e.g. sx \"swift concurrency\") or pipe them via sx -")
         }
         guard options.pageNo >= 1 else {
             throw SxError(.usage, "--page must be 1 or greater (got \(options.pageNo))")
@@ -199,6 +208,17 @@ public struct Sx: AsyncParsableCommand {
         Shell.current.stderr.write(Data("sx: wrote results to \(output)\n".utf8))
     }
 
+    // MARK: - Input
+
+    /// Reads all of standard input as a string (for the `sx -` convention).
+    ///
+    /// Standard input is the process's inherited stream, not a filesystem path,
+    /// so this does not go through the sandbox.
+    static func readStandardInput() -> String {
+        let data = (try? FileHandle.standardInput.readToEnd()) ?? Data()
+        return String(decoding: data, as: UTF8.self)
+    }
+
     // MARK: - Run
 
     public func run() async throws {
@@ -208,7 +228,8 @@ public struct Sx: AsyncParsableCommand {
         do {
             let config = try await Config.load()
 
-            let options = try validatedSearchOptions(from: config)
+            let queryOverride = readsQueryFromStdin ? Self.readStandardInput() : nil
+            let options = try validatedSearchOptions(from: config, queryOverride: queryOverride)
 
             let format = OutputFormat.resolve(
                 json: json, clean: clean, links: links, configDefault: config.defaultOutput
