@@ -109,9 +109,12 @@ SwiftSx targets agents:
   meaningless to an agent and would require a `Process` shellout (forbidden).
   **`--first` is repurposed** to "return only the top result".
 - **Dropped: interactive config bootstrap (`ensureConfig` prompt)** — agents
-  can't answer prompts. Missing config fails closed (exit 7) with a message
-  naming the env vars / config keys to set; a non-interactive `sx config init`
-  may write a template later.
+  can't answer prompts. A missing `config.toml` is **not** itself an error
+  (`Config.load()` returns defaults), so e.g. `sx --engine brave …` with
+  `BRAVE_API_KEY` set works with no config file. Instead the tool **fails
+  closed at search time**: if the selected engine isn't configured it exits `7`
+  with a message naming the env var / config key to set. A non-interactive
+  `sx config init` may write a template later.
 - **Strengthened: errors & exit codes** as above; added `--fail-empty` and
   `--dry-run` (print the request that would be sent without sending it).
 - **Deferred: `--text` (readability → Markdown) and `--html` (raw fetch with

@@ -1,0 +1,34 @@
+import Foundation
+
+extension Config {
+    /// Returns the path to the `sx` config file.
+    ///
+    /// Resolution order (XDG Base Directory spec):
+    /// 1. If `XDG_CONFIG_HOME` is present and non-empty in `env`, use it as the
+    ///    base directory.
+    /// 2. Otherwise fall back to `<homeDirectory>/.config`.
+    ///
+    /// The returned path is always `<base>/sx/config.toml`. Path components are
+    /// joined via `URL` APIs so a trailing slash on the base can't produce a
+    /// malformed path.
+    ///
+    /// - Parameters:
+    ///   - env: The relevant environment variables (at least `XDG_CONFIG_HOME`).
+    ///   - homeDirectory: The current user's home directory path string.
+    /// - Returns: The absolute path to `sx/config.toml` under the config base.
+    public static func configFilePath(
+        env: [String: String],
+        homeDirectory: String
+    ) -> String {
+        let base: URL
+        if let xdg = env["XDG_CONFIG_HOME"], !xdg.isEmpty {
+            base = URL(fileURLWithPath: xdg)
+        } else {
+            base = URL(fileURLWithPath: homeDirectory).appendingPathComponent(".config")
+        }
+        return base
+            .appendingPathComponent("sx")
+            .appendingPathComponent("config.toml")
+            .path
+    }
+}
