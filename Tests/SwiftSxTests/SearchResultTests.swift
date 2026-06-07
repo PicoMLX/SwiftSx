@@ -198,13 +198,14 @@ import Testing
         #expect(result.url == "https://example.com")
     }
 
-    @Test func leniencySkipsNonStringAddressValues() throws {
-        // Non-string values within `address` are silently skipped.
+    @Test func leniencyPreservesNonStringAddressValues() throws {
+        // Scalar sub-fields are preserved; non-string scalars are stringified
+        // rather than dropped (matching the data, if not the type, of upstream's
+        // map[string]interface{}).
         let json = #"{"address": {"city": "Tokyo", "count": 3, "active": true}}"#
         let data = Data(json.utf8)
         let result = try JSONDecoder().decode(SearchResult.self, from: data)
-        // Only the String value should survive.
-        #expect(result.address == ["city": "Tokyo"])
+        #expect(result.address == ["city": "Tokyo", "count": "3", "active": "true"])
     }
 
     @Test func addressNilWhenAbsent() throws {
