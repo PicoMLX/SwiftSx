@@ -28,6 +28,13 @@ import Testing
         let path = History.historyFilePath(env: env, homeDirectory: "/home/u")
         #expect(path == "/custom/state/sx/history")
     }
+
+    @Test func ignoresRelativeXDGStateHome() {
+        // A relative XDG_STATE_HOME is invalid per the XDG spec → fall back.
+        let env = ["XDG_STATE_HOME": "relative/state"]
+        let path = History.historyFilePath(env: env, homeDirectory: "/home/u")
+        #expect(path == "/home/u/.local/state/sx/history")
+    }
 }
 
 // MARK: - formatLine / parseLines round-trip

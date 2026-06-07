@@ -42,7 +42,10 @@ extension History {
         homeDirectory: String
     ) -> String {
         let base: URL
-        if let xdg = env["XDG_STATE_HOME"], !xdg.isEmpty {
+        // The XDG spec requires XDG_STATE_HOME to be an absolute path; a
+        // relative value is invalid and must be ignored (a relative path would
+        // otherwise resolve against the process's current directory).
+        if let xdg = env["XDG_STATE_HOME"], xdg.hasPrefix("/") {
             base = URL(fileURLWithPath: xdg)
         } else {
             base = URL(fileURLWithPath: homeDirectory)

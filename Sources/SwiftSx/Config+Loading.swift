@@ -33,7 +33,10 @@ extension Config {
         do {
             try await Shell.authorize(url)
         } catch {
-            throw SxError(.refused, "cannot access config file at \(path): \(error)")
+            // Don't interpolate the raw sandbox error: it can embed the
+            // sandbox-resolved absolute path / internal layout. The logical
+            // config path is enough to be actionable.
+            throw SxError(.refused, "access to the config file at \(path) was refused by the sandbox")
         }
 
         guard FileManager.default.fileExists(atPath: url.path) else {
@@ -46,7 +49,11 @@ extension Config {
         } catch {
             throw SxError(.general, "cannot read config file at \(path): \(error)")
         }
-        let text = String(decoding: data, as: UTF8.self)
+        // Reject invalid UTF-8 rather than silently substituting U+FFFD
+        // (which `String(decoding:as:)` does) and then mis-parsing the TOML.
+        guard let text = String(bytes: data, encoding: .utf8) else {
+            throw SxError(.usage, "config file at \(path) is not valid UTF-8")
+        }
         return try Config.decode(fromTOML: text).normalized().applyingEnvironmentOverrides(env)
     }
 }
