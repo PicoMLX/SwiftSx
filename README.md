@@ -49,6 +49,8 @@ sx "swift concurrency" -e brave         # one engine, no fallback
 sx "swift concurrency" -n 5             # at most 5 results
 sx "swift concurrency" --first          # only the top result
 sx "swift concurrency" --site github.com --time-range week
+sx "swift concurrency" --first --text   # fetch the top page, output as Markdown
+sx "swift concurrency" --first --html   # fetch the top page, output raw HTML
 echo "swift concurrency" | sx -         # read the query from stdin
 sx "swift concurrency" -o results.json  # write results to a file (sandboxed)
 sx "swift concurrency" --dry-run        # show the plan without searching

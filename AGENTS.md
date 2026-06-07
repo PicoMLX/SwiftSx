@@ -117,9 +117,11 @@ SwiftSx targets agents:
   `sx config init` may write a template later.
 - **Strengthened: errors & exit codes** as above; added `--fail-empty` and
   `--dry-run` (print the request that would be sent without sending it).
-- **Deferred: `--text` (readability → Markdown) and `--html` (raw fetch with
-  anti-bot headers)** — the heaviest pieces to port; they land in later PRs and
-  may ship simplified.
+- **Implemented (simplified): `--text` (page → Markdown) and `--html` (raw
+  fetch with browser headers)** — each selected result is fetched through the
+  sandbox-gated `PageFetcher`; `--text` runs the body through `HTMLExtractor`, a
+  dependency-free readability-style HTML→Markdown converter (good enough for an
+  agent, not a full Readability port).
 
 ## Backends
 
@@ -166,10 +168,13 @@ Small, stacked PRs, each green on CI:
 13. ✅ `-o/--output` (sandboxed file) · ✅ stdin (`sx -`) · ✅ `--first` (top result only)
 14. Shell completion is provided by ArgumentParser itself
     (`sx --generate-completion-script <shell>`) — no custom subcommand needed.
-15. (later) `--text` extraction · (later) `--html` raw fetch
+15. ✅ `PageFetcher` (sandbox-gated) · ✅ `--html` (raw) · ✅ `--text` (`HTMLExtractor` → Markdown)
+16. ✅ Hardening: cross-process history-file `flock`; Tavily `answer` surfaced as a
+    leading result; `no_verify_ssl` for the SearXNG transport (Apple platforms —
+    Linux `URLSession` has no trust-override hook, so the flag is a no-op there).
 
-Deferred hardening (tracked, not yet scheduled): cross-process history-file
-locking; `no_verify_ssl`; surfacing Tavily's `answer` field.
+The agent-relevant surface of `byteowlz/sx` is now ported. Still intentionally
+out of scope (see Deviations): interactive mode and browser-opening.
 
 ## SwiftBash consumption
 
