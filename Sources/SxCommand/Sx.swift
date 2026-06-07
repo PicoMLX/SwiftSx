@@ -47,6 +47,9 @@ public struct Sx: AsyncParsableCommand {
     @Flag(name: .long, help: "Fetch each result page and output its raw HTML (overrides the format flags).")
     public var html: Bool = false
 
+    @Flag(name: .long, help: "Fetch each result page and output its main content as Markdown (overrides the format flags; wins over --html).")
+    public var text: Bool = false
+
     // MARK: Query tuning
 
     @Option(name: [.customShort("n"), .customLong("count")],
@@ -253,15 +256,28 @@ public struct Sx: AsyncParsableCommand {
         }
     }
 
-    /// Fetches each result's page (raw HTML) and renders the document, emitting a
-    /// stderr note for any page that couldn't be fetched.
-    func renderFetchedPages(_ results: [SearchResult], using fetcher: PageFetcher) async throws -> String {
+    /// Fetches each result's page and renders the document, emitting a stderr note
+    /// for any page that couldn't be fetched.
+    ///
+    /// - Parameter asText: when `true`, each fetched body is run through
+    ///   ``HTMLExtractor`` (raw HTML → Markdown); otherwise the raw HTML is kept.
+    func renderFetchedPages(_ results: [SearchResult], asText: Bool, using fetcher: PageFetcher) async throws -> String {
         let bodies = try await fetchPages(results, using: fetcher)
         let stderr = Shell.current.stderr
         for (result, body) in zip(results, bodies) where body == nil {
             stderr.write(Data("sx: could not fetch \(result.url)\n".utf8))
         }
-        return Self.renderPages(results, contents: bodies)
+        return Self.renderPages(results, contents: Self.pageContents(bodies, asText: asText))
+    }
+
+    /// Maps fetched raw bodies to the content to display: extracted Markdown
+    /// (`asText`) via ``HTMLExtractor`` or the raw HTML otherwise. `nil` (an
+    /// unreachable page) is preserved. Pure (no I/O) so it is unit-testable.
+    static func pageContents(_ bodies: [String?], asText: Bool) -> [String?] {
+        bodies.map { body in
+            guard let body else { return nil }
+            return asText ? HTMLExtractor.extract(body) : body
+        }
     }
 
     /// Renders fetched page content as one document — a titled block per result
@@ -327,10 +343,13 @@ public struct Sx: AsyncParsableCommand {
             // Apply --first (top result only), then render.
             let results = selectedResults(outcome.results)
             let rendered: String
-            if html {
-                // Content mode: fetch each page and output its raw HTML. Overrides
-                // the JSON/links/plain format flags.
-                rendered = try await renderFetchedPages(results, using: PageFetcher(timeout: config.timeout))
+            if html || text {
+                // Content mode: fetch each page and output its content — extracted
+                // Markdown (--text, which wins) or raw HTML (--html). Overrides the
+                // JSON/links/plain format flags.
+                rendered = try await renderFetchedPages(
+                    results, asText: text, using: PageFetcher(timeout: config.timeout)
+                )
             } else {
                 switch format {
                 case .json(let clean):
