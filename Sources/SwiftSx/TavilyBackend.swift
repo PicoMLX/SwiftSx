@@ -50,6 +50,8 @@ private struct TavilyRequest: Encodable {
 /// The JSON envelope returned by the Tavily `/search` endpoint.
 private struct TavilyResponse: Decodable {
     let results: [Item]?
+    /// Tavily's AI-generated answer (present when `include_answer` was requested).
+    let answer: String?
 
     struct Item: Decodable {
         let title: String?
@@ -162,7 +164,7 @@ public struct TavilyBackend: SearchBackend {
         case 200...299:
             do {
                 let decoded = try JSONDecoder().decode(TavilyResponse.self, from: data)
-                return (decoded.results ?? []).map { item in
+                var results: [SearchResult] = (decoded.results ?? []).map { item in
                     let resolvedContent: String
                     if includeRawContent, let raw = item.rawContent, !raw.isEmpty {
                         resolvedContent = raw
@@ -177,6 +179,26 @@ public struct TavilyBackend: SearchBackend {
                         engines: ["tavily"]
                     )
                 }
+                // Surface Tavily's AI-generated answer (when requested and present)
+                // as a leading result with category "answer" and no URL. Agents
+                // reading --json can pick it out by category; --links (which skips
+                // empty-URL entries) ignores it.
+                if includeAnswer,
+                   let answer = decoded.answer,
+                   !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    results.insert(
+                        SearchResult(
+                            title:   "Tavily answer",
+                            url:     "",
+                            content: answer,
+                            engine:  "tavily",
+                            engines: ["tavily"],
+                            category: "answer"
+                        ),
+                        at: 0
+                    )
+                }
+                return results
             } catch {
                 throw BackendError(
                     backend: "tavily",
