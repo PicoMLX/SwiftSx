@@ -33,7 +33,12 @@ extension Config {
         do {
             try await Shell.authorize(url)
         } catch {
-            throw SxError(.refused, "cannot access config file at \(path): \(error)")
+            // Don't interpolate the raw sandbox error: it can embed the
+            // sandbox-resolved absolute path / internal layout. Use only the
+            // logical config path, and name the concrete next action (per
+            // AGENTS.md's LLM-friendly message rules) so the refusal stays
+            // actionable without leaking internals.
+            throw SxError(.refused, "access to the config file at \(path) was refused by the sandbox — grant the sandbox access to this path, or set XDG_CONFIG_HOME to an allowed absolute directory")
         }
 
         guard FileManager.default.fileExists(atPath: url.path) else {
@@ -46,7 +51,11 @@ extension Config {
         } catch {
             throw SxError(.general, "cannot read config file at \(path): \(error)")
         }
-        let text = String(decoding: data, as: UTF8.self)
+        // Reject invalid UTF-8 rather than silently substituting U+FFFD
+        // (which `String(decoding:as:)` does) and then mis-parsing the TOML.
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw SxError(.usage, "config file at \(path) is not valid UTF-8 — re-save it as UTF-8, or remove it to fall back to defaults")
+        }
         return try Config.decode(fromTOML: text).normalized().applyingEnvironmentOverrides(env)
     }
 }

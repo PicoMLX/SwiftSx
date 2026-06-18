@@ -25,7 +25,9 @@ extension Config {
         if copy.resultCount <= 0 {
             copy.resultCount = 10
         }
-        if copy.timeout <= 0 {
+        if copy.timeout <= 0 || !copy.timeout.isFinite {
+            // Also reset non-finite values (nan / ±inf), which would otherwise
+            // slip past a `<= 0` check and make every request hang or fail.
             copy.timeout = 30.0
         }
 

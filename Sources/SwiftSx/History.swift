@@ -42,7 +42,13 @@ extension History {
         homeDirectory: String
     ) -> String {
         let base: URL
-        if let xdg = env["XDG_STATE_HOME"], !xdg.isEmpty {
+        // The XDG spec requires XDG_STATE_HOME to be an absolute path; a
+        // relative value is invalid and must be ignored (a relative path would
+        // otherwise resolve against the process's current directory). The
+        // leading-"/" test is deliberate: it also rejects tilde forms (~/...),
+        // which NSString.isAbsolutePath would accept but URL(fileURLWithPath:)
+        // does not expand. (SwiftSx targets macOS/Linux only.)
+        if let xdg = env["XDG_STATE_HOME"], xdg.hasPrefix("/") {
             base = URL(fileURLWithPath: xdg)
         } else {
             base = URL(fileURLWithPath: homeDirectory)

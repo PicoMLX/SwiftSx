@@ -327,6 +327,15 @@ import Testing
         #expect(config.normalized().timeout == 12.5)
     }
 
+    @Test func timeoutDefaultsWhenNonFinite() {
+        // nan / ±inf slip past a `<= 0` check, so they must be reset too.
+        for bad in [Double.nan, .infinity, -.infinity] {
+            var config = Config()
+            config.timeout = bad
+            #expect(config.normalized().timeout == 30.0)
+        }
+    }
+
     @Test func tavilySearchDepthDefaultsWhenEmpty() {
         var config = Config()
         config.enginesTavily.searchDepth = ""
@@ -421,5 +430,21 @@ import Testing
         let env = ["XDG_CONFIG_HOME": "/custom/xdg/config"]
         let path = Config.configFilePath(env: env, homeDirectory: "/home/u")
         #expect(path == "/custom/xdg/config/sx/config.toml")
+    }
+
+    @Test func ignoresRelativeXDGConfigHome() {
+        // A relative XDG_CONFIG_HOME is invalid per the XDG spec → fall back.
+        let env = ["XDG_CONFIG_HOME": "relative/config"]
+        let path = Config.configFilePath(env: env, homeDirectory: "/home/u")
+        #expect(path == "/home/u/.config/sx/config.toml")
+    }
+
+    @Test func ignoresTildeXDGConfigHome() {
+        // A tilde path is not a literal absolute path (URL(fileURLWithPath:)
+        // would not expand it), so it must be ignored — NSString.isAbsolutePath
+        // would wrongly accept it. Falls back to home.
+        let env = ["XDG_CONFIG_HOME": "~/config"]
+        let path = Config.configFilePath(env: env, homeDirectory: "/home/u")
+        #expect(path == "/home/u/.config/sx/config.toml")
     }
 }
