@@ -28,7 +28,7 @@ engines with automatic failover. Highlights:
 - **Scriptable** — JSON output
 - **Content extraction** — convert results to Markdown
 - **Quality of life** — query history, shell completions, and interactive mode
-- **Cross-platform** — macOS, Linux, Windows
+- **Cross-platform** — macOS and Linux
 
 Example `sx` usage, for reference:
 
