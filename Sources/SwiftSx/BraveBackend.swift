@@ -27,11 +27,13 @@ private struct BraveResponse: Decodable {
         let description: String?
     }
 
-    /// Brave's `mixed` ranking. `main` lists references to results in the order
-    /// Brave intends them to appear in the primary column, interleaving the
-    /// `web` / `news` / `videos` sections.
+    /// Brave's `mixed` ranking. The `top` / `main` / `side` arrays list result
+    /// references in the order Brave intends them to appear (top first, then
+    /// main, then side), interleaving the `web` / `news` / `videos` sections.
     struct Mixed: Decodable {
+        let top: [Ref]?
         let main: [Ref]?
+        let side: [Ref]?
 
         /// A reference into a typed section. `all == true` means "insert every
         /// result of `type` at this position"; otherwise the single result at
@@ -165,18 +167,19 @@ public struct BraveBackend: SearchBackend {
         return min(raw, 20)
     }
 
-    /// Order Brave's decoded sections by its `mixed.main` ranking.
+    /// Order Brave's decoded sections by its `mixed` ranking.
     ///
     /// Brave returns separate `web` / `news` / `videos` sections plus a `mixed`
-    /// object whose `main` array gives the intended cross-section display order
-    /// (each entry references a section by `type` and either a single `index` or
-    /// `all` results of that type). Honouring it means `--first` / `--count`
-    /// surface the items Brave ranked highest, not just the first `web` hit.
+    /// object whose `top` / `main` / `side` arrays give the intended
+    /// cross-section display order — `top` ranks above `main`, then `side`. Each
+    /// entry references a section by `type` and either a single `index` or `all`
+    /// results of that type. Honouring it means `--first` / `--count` surface
+    /// the items Brave ranked highest, not just the first `web` hit.
     ///
-    /// Falls back to a `web → news → videos` concatenation when `mixed` is
-    /// absent or empty (e.g. a single-`result_filter` query). Any results Brave
-    /// returned but did not reference in `main` are appended afterwards, so
-    /// nothing the API sent is dropped.
+    /// Falls back to a `web → news → videos` concatenation when `mixed` has no
+    /// references (e.g. a single-`result_filter` query). Any results Brave
+    /// returned but didn't reference are appended afterwards, so nothing the API
+    /// sent is dropped.
     private static func orderedItems(_ decoded: BraveResponse) -> [BraveResponse.Item] {
         let sections: [String: [BraveResponse.Item]] = [
             "web":    decoded.web?.results    ?? [],
@@ -185,7 +188,11 @@ public struct BraveBackend: SearchBackend {
         ]
         let fallbackOrder = ["web", "news", "videos"]
 
-        guard let main = decoded.mixed?.main, !main.isEmpty else {
+        // Brave's documented reading order is top, then main, then side.
+        let refs = (decoded.mixed?.top ?? [])
+                 + (decoded.mixed?.main ?? [])
+                 + (decoded.mixed?.side ?? [])
+        guard !refs.isEmpty else {
             return fallbackOrder.flatMap { sections[$0] ?? [] }
         }
 
@@ -193,14 +200,15 @@ public struct BraveBackend: SearchBackend {
         var consumed: [String: Set<Int>] = [:]
 
         // Emit a single result, de-duplicating so the same item can't appear
-        // twice (e.g. a `type` referenced by both `all` and `index`).
+        // twice (e.g. a `type` referenced by both `all` and `index`, or by both
+        // `top` and `main`).
         func emit(_ type: String, _ index: Int) {
             guard let items = sections[type], items.indices.contains(index) else { return }
             guard consumed[type, default: []].insert(index).inserted else { return }
             ordered.append(items[index])
         }
 
-        for ref in main {
+        for ref in refs {
             guard sections[ref.type] != nil else { continue }   // ignore unsupported types
             if ref.all == true {
                 for i in (sections[ref.type] ?? []).indices { emit(ref.type, i) }
@@ -209,7 +217,7 @@ public struct BraveBackend: SearchBackend {
             }
         }
 
-        // Defensive: append any section items `main` didn't reference.
+        // Defensive: append any section items the mixed refs didn't reference.
         for type in fallbackOrder {
             for i in (sections[type] ?? []).indices { emit(type, i) }
         }
