@@ -25,6 +25,9 @@ private struct ExaAPIRequest: Encodable {
     /// would be empty. Asking for bounded `text` populates the field the mapper
     /// reads without pulling full page bodies.
     let contents: Contents
+    /// Domain allow-list (Exa's `includeDomains`). When set, Exa restricts
+    /// results to these domains — preferred over a lexical `site:` query prefix.
+    let includeDomains: [String]?
 
     /// The `contents` sub-object. `text.maxCharacters` bounds the page text Exa
     /// returns per result (vs. unbounded `text: true`).
@@ -34,6 +37,10 @@ private struct ExaAPIRequest: Encodable {
             let maxCharacters: Int
         }
     }
+    // Encoding is compiler-synthesized: the stored property names already match
+    // the Exa API keys (query/numResults/contents/includeDomains), and the
+    // synthesized encoder uses encodeIfPresent for the optional includeDomains
+    // (so it is omitted when nil).
 }
 
 /// The JSON envelope returned by the Exa `/search` API endpoint.
@@ -287,28 +294,27 @@ public struct ExaBackend: SearchBackend {
             )
         }
 
-        // q — prefix site: when options.site is non-empty.
-        let queryString: String
-        if options.site.isEmpty {
-            queryString = options.query
-        } else {
-            queryString = "site:\(options.site) \(options.query)"
-        }
+        // site restriction — use Exa's `includeDomains` allow-list rather than a
+        // lexical `site:` query prefix.
+        let includeDomains: [String]? = options.site.isEmpty ? nil : [options.site]
 
-        // numResults resolution: options > backend default > 10.
-        let n: Int
+        // numResults resolution: options > backend default > 10, then clamp to
+        // Exa's documented maximum of 100.
+        let resolved: Int
         if options.numResults > 0 {
-            n = options.numResults
+            resolved = options.numResults
         } else if numResults > 0 {
-            n = numResults
+            resolved = numResults
         } else {
-            n = 10
+            resolved = 10
         }
+        let n = min(resolved, 100)
 
         let requestBody = ExaAPIRequest(
-            query: queryString,
+            query: options.query,
             numResults: n,
-            contents: .init(text: .init(maxCharacters: ExaAPIRequest.maxTextCharacters))
+            contents: .init(text: .init(maxCharacters: ExaAPIRequest.maxTextCharacters)),
+            includeDomains: includeDomains
         )
         let bodyData: Data
         do {

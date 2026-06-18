@@ -306,6 +306,43 @@ private func braveJSON(results: [[String: String]] = []) -> Data {
         #expect(params["freshness"] == nil)
     }
 
+    // MARK: result_filter (categories → result_filter)
+
+    @Test func resultFilterFromNewsCategory() throws {
+        let options = SearchOptions(query: "test", categories: ["news"])
+        let req = try backend.makeRequest(options)
+        let params = parseBraveQuery(req.url?.absoluteString ?? "")
+        #expect(params["result_filter"] == "news")
+    }
+
+    @Test func resultFilterFromVideosCategory() throws {
+        let options = SearchOptions(query: "test", categories: ["videos"])
+        let req = try backend.makeRequest(options)
+        let params = parseBraveQuery(req.url?.absoluteString ?? "")
+        #expect(params["result_filter"] == "videos")
+    }
+
+    @Test func resultFilterCombinesCategoriesPreservingOrder() throws {
+        let options = SearchOptions(query: "test", categories: ["news", "videos"])
+        let req = try backend.makeRequest(options)
+        let params = parseBraveQuery(req.url?.absoluteString ?? "")
+        #expect(params["result_filter"] == "news,videos")
+    }
+
+    @Test func resultFilterAbsentWhenCategoriesEmpty() throws {
+        let options = SearchOptions(query: "test", categories: [])
+        let req = try backend.makeRequest(options)
+        let params = parseBraveQuery(req.url?.absoluteString ?? "")
+        #expect(params["result_filter"] == nil)
+    }
+
+    @Test func resultFilterOmitsUnknownCategories() throws {
+        let options = SearchOptions(query: "test", categories: ["science"])
+        let req = try backend.makeRequest(options)
+        let params = parseBraveQuery(req.url?.absoluteString ?? "")
+        #expect(params["result_filter"] == nil)
+    }
+
     // MARK: endpoint
 
     @Test func endpointIsCorrect() throws {
@@ -418,6 +455,108 @@ struct BraveSearchTests {
 
         let results = try await backend.search(SearchOptions(query: "test"))
         #expect(results.isEmpty)
+    }
+
+    @Test func decodesNewsAndVideosSections() async throws {
+        let backend = makeBackend()
+        // Brave returns separate web/news/videos sections; all should be merged
+        // (web, then news, then videos), preserving order.
+        let body = Data("""
+        {
+          "web":    {"results": [{"title": "W", "url": "https://w.com", "description": "web"}]},
+          "news":   {"results": [{"title": "N", "url": "https://n.com", "description": "news"}]},
+          "videos": {"results": [{"title": "V", "url": "https://v.com", "description": "vid"}]}
+        }
+        """.utf8)
+        setHandler(status: 200, body: body)
+
+        let results = try await backend.search(SearchOptions(query: "test"))
+        #expect(results.count == 3)
+        #expect(results.map(\.title) == ["W", "N", "V"])
+    }
+
+    @Test func capsMergedSectionsToRequestedCount() async throws {
+        // Brave's `count` only limits the web section, so the merged
+        // web+news+videos list must be capped to the requested count. With
+        // --count 2 the result is [W, N], not all three sections.
+        let backend = makeBackend()
+        let body = Data("""
+        {
+          "web":    {"results": [{"title": "W", "url": "https://w.com", "description": "web"}]},
+          "news":   {"results": [{"title": "N", "url": "https://n.com", "description": "news"}]},
+          "videos": {"results": [{"title": "V", "url": "https://v.com", "description": "vid"}]}
+        }
+        """.utf8)
+        setHandler(status: 200, body: body)
+
+        let results = try await backend.search(SearchOptions(query: "test", numResults: 2))
+        #expect(results.count == 2)
+        #expect(results.map(\.title) == ["W", "N"])
+    }
+
+    @Test func mixedRankingOrdersResults() async throws {
+        let backend = makeBackend()
+        // Brave's `mixed.main` dictates the cross-section display order. Here it
+        // interleaves web[1], all news, then web[0] — which is NOT the plain
+        // web→news→videos concatenation ([W0, W1, N0]).
+        let body = Data("""
+        {
+          "mixed": {"main": [
+            {"type": "web", "index": 1},
+            {"type": "news", "all": true},
+            {"type": "web", "index": 0}
+          ]},
+          "web":  {"results": [
+            {"title": "W0", "url": "https://w0.com", "description": "web0"},
+            {"title": "W1", "url": "https://w1.com", "description": "web1"}
+          ]},
+          "news": {"results": [
+            {"title": "N0", "url": "https://n0.com", "description": "news0"}
+          ]}
+        }
+        """.utf8)
+        setHandler(status: 200, body: body)
+
+        let results = try await backend.search(SearchOptions(query: "test"))
+        #expect(results.map(\.title) == ["W1", "N0", "W0"])
+    }
+
+    @Test func mixedRankingKeepsUnreferencedResults() async throws {
+        let backend = makeBackend()
+        // `mixed.main` references only web[0]; the unreferenced news result must
+        // still be returned (appended), never silently dropped.
+        let body = Data("""
+        {
+          "mixed": {"main": [{"type": "web", "index": 0}]},
+          "web":  {"results": [{"title": "W0", "url": "https://w0.com", "description": "web0"}]},
+          "news": {"results": [{"title": "N0", "url": "https://n0.com", "description": "news0"}]}
+        }
+        """.utf8)
+        setHandler(status: 200, body: body)
+
+        let results = try await backend.search(SearchOptions(query: "test"))
+        #expect(results.map(\.title) == ["W0", "N0"])
+    }
+
+    @Test func mixedRankingHonorsTopBeforeMain() async throws {
+        let backend = makeBackend()
+        // `mixed.top` ranks above `mixed.main`: news[0] (in top) must precede
+        // web[0] (in main). The old main-only ordering would have appended the
+        // top item last instead, yielding [W0, N0].
+        let body = Data("""
+        {
+          "mixed": {
+            "top":  [{"type": "news", "index": 0}],
+            "main": [{"type": "web", "index": 0}]
+          },
+          "web":  {"results": [{"title": "W0", "url": "https://w0.com", "description": "web0"}]},
+          "news": {"results": [{"title": "N0", "url": "https://n0.com", "description": "news0"}]}
+        }
+        """.utf8)
+        setHandler(status: 200, body: body)
+
+        let results = try await backend.search(SearchOptions(query: "test"))
+        #expect(results.map(\.title) == ["N0", "W0"])
     }
 
     @Test func status201AlsoDecodes() async throws {

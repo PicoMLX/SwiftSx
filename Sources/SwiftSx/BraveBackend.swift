@@ -9,9 +9,15 @@ import FoundationNetworking
 
 /// The JSON envelope returned by the Brave Search `/web/search` endpoint.
 private struct BraveResponse: Decodable {
-    let web: Web?
+    let web: Section?
+    let news: Section?
+    let videos: Section?
+    /// Brave's cross-section display ranking (see `Mixed`).
+    let mixed: Mixed?
 
-    struct Web: Decodable {
+    /// A result section (`web`, `news`, or `videos`). Each carries a `results`
+    /// array of items sharing the same title/url/description shape.
+    struct Section: Decodable {
         let results: [Item]?
     }
 
@@ -19,6 +25,24 @@ private struct BraveResponse: Decodable {
         let title: String?
         let url: String?
         let description: String?
+    }
+
+    /// Brave's `mixed` ranking. The `top` / `main` / `side` arrays list result
+    /// references in the order Brave intends them to appear (top first, then
+    /// main, then side), interleaving the `web` / `news` / `videos` sections.
+    struct Mixed: Decodable {
+        let top: [Ref]?
+        let main: [Ref]?
+        let side: [Ref]?
+
+        /// A reference into a typed section. `all == true` means "insert every
+        /// result of `type` at this position"; otherwise the single result at
+        /// `index`.
+        struct Ref: Decodable {
+            let type: String
+            let index: Int?
+            let all: Bool?
+        }
     }
 }
 
@@ -92,7 +116,11 @@ public struct BraveBackend: SearchBackend {
         case 200...299:
             do {
                 let decoded = try JSONDecoder().decode(BraveResponse.self, from: data)
-                return (decoded.web?.results ?? []).map { item in
+                // Order results by Brave's `mixed` ranking, then cap to the
+                // requested count: Brave's `count` only limits the web section,
+                // so the merged list could otherwise exceed numResults.
+                let items = Self.orderedItems(decoded)
+                return items.prefix(Self.resolvedCount(options.numResults)).map { item in
                     SearchResult(
                         title:   item.title       ?? "",
                         url:     item.url         ?? "",
@@ -131,6 +159,71 @@ public struct BraveBackend: SearchBackend {
 
     // MARK: - Request construction (internal for testability)
 
+    /// Resolve the requested result count: default 10 when `<= 0`, clamped to
+    /// Brave's documented maximum of 20. Used both to size the request and to
+    /// cap the merged (web + news + videos) result list.
+    static func resolvedCount(_ raw: Int) -> Int {
+        if raw <= 0 { return 10 }
+        return min(raw, 20)
+    }
+
+    /// Order Brave's decoded sections by its `mixed` ranking.
+    ///
+    /// Brave returns separate `web` / `news` / `videos` sections plus a `mixed`
+    /// object whose `top` / `main` / `side` arrays give the intended
+    /// cross-section display order — `top` ranks above `main`, then `side`. Each
+    /// entry references a section by `type` and either a single `index` or `all`
+    /// results of that type. Honouring it means `--first` / `--count` surface
+    /// the items Brave ranked highest, not just the first `web` hit.
+    ///
+    /// Falls back to a `web → news → videos` concatenation when `mixed` has no
+    /// references (e.g. a single-`result_filter` query). Any results Brave
+    /// returned but didn't reference are appended afterwards, so nothing the API
+    /// sent is dropped.
+    private static func orderedItems(_ decoded: BraveResponse) -> [BraveResponse.Item] {
+        let sections: [String: [BraveResponse.Item]] = [
+            "web":    decoded.web?.results    ?? [],
+            "news":   decoded.news?.results   ?? [],
+            "videos": decoded.videos?.results ?? [],
+        ]
+        let fallbackOrder = ["web", "news", "videos"]
+
+        // Brave's documented reading order is top, then main, then side.
+        let refs = (decoded.mixed?.top ?? [])
+                 + (decoded.mixed?.main ?? [])
+                 + (decoded.mixed?.side ?? [])
+        guard !refs.isEmpty else {
+            return fallbackOrder.flatMap { sections[$0] ?? [] }
+        }
+
+        var ordered: [BraveResponse.Item] = []
+        var consumed: [String: Set<Int>] = [:]
+
+        // Emit a single result, de-duplicating so the same item can't appear
+        // twice (e.g. a `type` referenced by both `all` and `index`, or by both
+        // `top` and `main`).
+        func emit(_ type: String, _ index: Int) {
+            guard let items = sections[type], items.indices.contains(index) else { return }
+            guard consumed[type, default: []].insert(index).inserted else { return }
+            ordered.append(items[index])
+        }
+
+        for ref in refs {
+            guard sections[ref.type] != nil else { continue }   // ignore unsupported types
+            if ref.all == true {
+                for i in (sections[ref.type] ?? []).indices { emit(ref.type, i) }
+            } else if let index = ref.index {
+                emit(ref.type, index)
+            }
+        }
+
+        // Defensive: append any section items the mixed refs didn't reference.
+        for type in fallbackOrder {
+            for i in (sections[type] ?? []).indices { emit(type, i) }
+        }
+        return ordered
+    }
+
     /// Build the `HTTPRequest` for the given options.
     ///
     /// This is factored out of `search(_:)` so tests can assert URL, method,
@@ -147,15 +240,7 @@ public struct BraveBackend: SearchBackend {
         }
 
         // count — clamp to 1...20; default to 10 when ≤ 0.
-        let rawCount = options.numResults
-        let count: Int
-        if rawCount <= 0 {
-            count = 10
-        } else if rawCount > 20 {
-            count = 20
-        } else {
-            count = rawCount
-        }
+        let count = Self.resolvedCount(options.numResults)
 
         // safesearch — map the documented levels.
         // Both "none" and "off" map to Brave's "off"; "strict" → "strict";
@@ -210,6 +295,23 @@ public struct BraveBackend: SearchBackend {
             if let freshness {
                 queryItems.append(URLQueryItem(name: "freshness", value: freshness))
             }
+        }
+
+        // result_filter — map requested categories to Brave's result types so
+        // the corresponding response sections are returned (and decoded).
+        let resultFilters: [String] = options.categories.compactMap { category in
+            switch category {
+            case "news":            return "news"
+            case "videos", "video": return "videos"
+            case "general", "web":  return "web"
+            default:                return nil
+            }
+        }
+        if !resultFilters.isEmpty {
+            // De-duplicate while preserving order.
+            var seen = Set<String>()
+            let unique = resultFilters.filter { seen.insert($0).inserted }
+            queryItems.append(URLQueryItem(name: "result_filter", value: unique.joined(separator: ",")))
         }
 
         var components = URLComponents(string: "https://api.search.brave.com/res/v1/web/search")

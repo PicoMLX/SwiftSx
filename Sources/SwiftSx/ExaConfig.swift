@@ -1,6 +1,8 @@
 /// Configuration for the Exa Search backend.
 public struct ExaConfig: Codable, Sendable, Equatable {
-    /// Search mode: `"auto"` (default), `"neural"`, or `"keyword"`.
+    /// Transport mode: `"auto"` (default — REST API, falling back to MCP),
+    /// `"api"`, or `"mcp"`. (This selects the transport, not an Exa search type;
+    /// upstream `sx` does not expose a neural/keyword search-type option.)
     public var mode: String
     /// Exa API key.
     /// Overridden at runtime by the `EXA_API_KEY` environment variable.

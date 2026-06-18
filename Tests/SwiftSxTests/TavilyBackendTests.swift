@@ -286,6 +286,21 @@ private func tavilyItem(
         let dict = decodeTavilyBody(body)
         #expect(dict["topic"] == nil)
     }
+
+    // MARK: safe_search
+
+    @Test func bodyNeverSendsSafeSearch() throws {
+        // Tavily's public API does not define safe_search (enterprise-only
+        // boolean); forwarding the SearchOptions string level produced an
+        // invalid field that could 400 valid searches. It must never be sent —
+        // not even the default "strict".
+        for level in ["strict", "moderate", "off", ""] {
+            let options = SearchOptions(query: "test", safeSearch: level)
+            let (_, body) = try backend.makeRequest(options)
+            let dict = decodeTavilyBody(body)
+            #expect(dict["safe_search"] == nil)
+        }
+    }
 }
 
 // MARK: - isAvailable

@@ -304,6 +304,11 @@ public struct TavilyBackend: SearchBackend {
             topic = nil
         }
 
+        // safe_search is intentionally NOT forwarded: Tavily's public API does
+        // not define it (it is an enterprise-only boolean), so sending the
+        // SearchOptions string level produced an invalid `safe_search` field
+        // that could make Tavily reject otherwise-valid searches with HTTP 400.
+        // safeSearch is still honored by the Brave and SearXNG backends.
         let requestBody = TavilyRequest(
             query:             queryString,
             searchDepth:       searchDepth,

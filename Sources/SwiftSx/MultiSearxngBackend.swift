@@ -46,7 +46,10 @@ public struct MultiSearxngBackend: SearchBackend {
         let available = instances.filter { $0.isAvailable }
 
         switch strategy {
-        case "parallel-fastest":
+        case "parallel-fastest", "fastest":
+            // Accept "fastest" as an alias for "parallel-fastest" so a config
+            // that uses the shorter form races instances instead of silently
+            // falling through to "ordered".
             return try await parallelFastest(available, options: options)
         default:
             // "ordered" and any unknown strategy.

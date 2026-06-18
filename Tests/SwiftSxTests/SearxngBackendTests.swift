@@ -738,6 +738,31 @@ struct MultiSearxngParallelFastestTests {
             _ = try await multi.search(SearchOptions(query: "test"))
         }
     }
+
+    @Test func fastestAliasRacesLikeParallelFastest() async throws {
+        // "fastest" is accepted as an alias for "parallel-fastest" rather than
+        // silently falling through to "ordered".
+        MockURLProtocol.handler = { request in
+            let body = searxngJSON(results: [["title": "Fastest", "url": "https://p.example.com"]])
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            return (response, body)
+        }
+
+        let session = MockURLProtocol.session()
+        let transport = HTTPTransport(session: session)
+        let instanceA = SearxngBackend(baseURL: "https://a.example.com", transport: transport)
+        let instanceB = SearxngBackend(baseURL: "https://b.example.com", transport: transport)
+        let multi = MultiSearxngBackend(instances: [instanceA, instanceB], strategy: "fastest")
+
+        let results = try await multi.search(SearchOptions(query: "test"))
+        #expect(results.count == 1)
+        #expect(results[0].title == "Fastest")
+    }
 }
 
 // MARK: - Factory: SearxngBackend.makeBackend(from:transport:)

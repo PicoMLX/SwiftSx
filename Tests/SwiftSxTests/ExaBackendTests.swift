@@ -96,18 +96,28 @@ private func mcpRPCEnvelope(resultJSON: Data) -> Data {
         #expect(dict["query"] as? String == "swift concurrency")
     }
 
-    @Test func bodyPrefixesSiteWhenNonEmpty() throws {
+    @Test func bodySiteUsesIncludeDomainsWhenNonEmpty() throws {
         let options = SearchOptions(query: "swift", site: "github.com")
         let (_, body) = try backend.makeAPIRequest(options)
         let dict = decodeExaBody(body)
-        #expect(dict["query"] as? String == "site:github.com swift")
+        // The query is no longer site-prefixed; the domain goes to includeDomains.
+        #expect(dict["query"] as? String == "swift")
+        #expect(dict["includeDomains"] as? [String] == ["github.com"])
     }
 
-    @Test func bodyNoPrefixWhenSiteEmpty() throws {
+    @Test func bodyIncludeDomainsAbsentWhenSiteEmpty() throws {
         let options = SearchOptions(query: "swift", site: "")
         let (_, body) = try backend.makeAPIRequest(options)
         let dict = decodeExaBody(body)
         #expect(dict["query"] as? String == "swift")
+        #expect(dict["includeDomains"] == nil)
+    }
+
+    @Test func bodyNumResultsClampedToExaMaximum() throws {
+        let options = SearchOptions(query: "test", numResults: 500)
+        let (_, body) = try backend.makeAPIRequest(options)
+        let dict = decodeExaBody(body)
+        #expect(dict["numResults"] as? Int == 100)
     }
 
     @Test func numResultsFromOptionsWhenPositive() throws {
