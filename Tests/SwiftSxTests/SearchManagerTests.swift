@@ -25,6 +25,17 @@ private struct MockBackend: SearchBackend {
     }
 }
 
+/// A backend that always throws a non-`BackendError` error, used to exercise the
+/// manager's catch-all mapping for unexpected error types.
+private struct RawErrorBackend: SearchBackend {
+    let name: String
+    var isAvailable: Bool { true }
+    struct Boom: Error {}
+    func search(_ options: SearchOptions) async throws -> [SearchResult] {
+        throw Boom()
+    }
+}
+
 // MARK: - BackendErrorCode.sxExitCode
 
 @Suite struct BackendErrorCodeExitCodeTests {
@@ -47,6 +58,10 @@ private struct MockBackend: SearchBackend {
 
     @Test func invalidResponseMapsToGeneral() {
         #expect(BackendErrorCode.invalidResponse.sxExitCode == .general)
+    }
+
+    @Test func usageMapsToUsage() {
+        #expect(BackendErrorCode.usage.sxExitCode == .usage)
     }
 }
 
@@ -213,6 +228,65 @@ private struct MockBackend: SearchBackend {
         }
     }
 
+    // MARK: All fail → throws aggregate error (all-usage → .usage)
+
+    @Test func allUsageFailuresThrowsUsageExitCode() async throws {
+        // Both backends reject the request as usage errors (e.g. Tavily HTTP
+        // 400). The aggregate must surface exit 2 — not collapse to .general —
+        // so an agent gets the "fix the command" signal on the fallback path too.
+        let registry: [String: any SearchBackend] = [
+            "alpha": MockBackend(name: "alpha", isAvailable: true,
+                                 outcome: .failure(BackendError(backend: "alpha", code: .usage, message: "bad query"))),
+            "beta":  MockBackend(name: "beta",  isAvailable: true,
+                                 outcome: .failure(BackendError(backend: "beta", code: .usage, message: "bad query"))),
+        ]
+        let manager = try SearchManager(registry: registry, primary: "alpha", fallbacks: ["beta"])
+
+        do {
+            _ = try await manager.search(SearchOptions(query: "test"))
+            Issue.record("Expected an SxError to be thrown")
+        } catch let e as SxError {
+            #expect(e.exitCode == .usage)
+            #expect(e.message.contains("all search backends failed"))
+        }
+    }
+
+    @Test func singleUsageFailureThrowsUsageExitCode() async throws {
+        // The exact Codex scenario: Tavily as the only attempted backend returns
+        // HTTP 400 (.usage) → aggregate exit 2, not exit 1.
+        let registry: [String: any SearchBackend] = [
+            "alpha": MockBackend(name: "alpha", isAvailable: true,
+                                 outcome: .failure(BackendError(backend: "alpha", code: .usage, message: "bad query"))),
+        ]
+        let manager = try SearchManager(registry: registry, primary: "alpha", fallbacks: [])
+
+        do {
+            _ = try await manager.search(SearchOptions(query: "test"))
+            Issue.record("Expected an SxError to be thrown")
+        } catch let e as SxError {
+            #expect(e.exitCode == .usage)
+        }
+    }
+
+    @Test func usageMixedWithFailClosedThrowsGeneral() async throws {
+        // A usage failure mixed with a fail-closed one is neither all-usage nor
+        // all-fail-closed → .general (exit 1).
+        let registry: [String: any SearchBackend] = [
+            "alpha": MockBackend(name: "alpha", isAvailable: true,
+                                 outcome: .failure(BackendError(backend: "alpha", code: .usage, message: "bad query"))),
+            "beta":  MockBackend(name: "beta",  isAvailable: true,
+                                 outcome: .failure(BackendError(backend: "beta", code: .auth, message: "bad key"))),
+        ]
+        let manager = try SearchManager(registry: registry, primary: "alpha", fallbacks: ["beta"])
+
+        do {
+            _ = try await manager.search(SearchOptions(query: "test"))
+            Issue.record("Expected an SxError to be thrown")
+        } catch let e as SxError {
+            #expect(e.exitCode == .general)
+        }
+    }
+
     // MARK: Failure record format
 
     @Test func aggregateMessageListsEachBackend() async throws {
@@ -354,6 +428,30 @@ private struct MockBackend: SearchBackend {
             Issue.record("Expected error to be thrown")
         } catch let thrown as SxError {
             #expect(thrown.exitCode == .auth)
+        }
+    }
+
+    @Test func nonBackendErrorFromExplicitMapsToGeneral() async throws {
+        // A raw (non-BackendError) error from the backend must be mapped to the
+        // stable contract (exit 1) instead of leaking out and bypassing the
+        // `sx:` error surface — mirroring how the fallback path handles it.
+        let registry: [String: any SearchBackend] = [
+            "raw": RawErrorBackend(name: "raw"),
+        ]
+        let manager = try SearchManager(registry: registry, primary: "raw", fallbacks: [])
+
+        await #expect(throws: SxError.self) {
+            _ = try await manager.searchExplicit("raw", SearchOptions())
+        }
+
+        do {
+            _ = try await manager.searchExplicit("raw", SearchOptions())
+            Issue.record("Expected an SxError to be thrown")
+        } catch let thrown as SxError {
+            #expect(thrown.exitCode == .general)
+            #expect(thrown.message.contains("raw"))
+        } catch {
+            Issue.record("Unexpected error type: \(error)")
         }
     }
 }

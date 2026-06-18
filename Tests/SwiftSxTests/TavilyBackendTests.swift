@@ -499,6 +499,63 @@ struct TavilySearchTests {
         }
     }
 
+    @Test func status400ThrowsUsageError() async throws {
+        // A 400 is a bad-request (usage) error: it must map to .usage (exit 2)
+        // so an agent fixes the query/options — not network/fail-closed, and not
+        // the transient class.
+        let backend = makeBackend()
+        setHandler(status: 400, body: Data("Bad Request".utf8))
+
+        await #expect(throws: BackendError.self) {
+            _ = try await backend.search(SearchOptions(query: "test"))
+        }
+
+        do {
+            _ = try await backend.search(SearchOptions(query: "test"))
+        } catch let error as BackendError {
+            #expect(error.code == .usage)
+            #expect(error.code.sxExitCode == .usage)
+            #expect(error.message.contains("400"))
+        }
+    }
+
+    @Test func status432ThrowsFailClosed() async throws {
+        // Tavily 432 = plan/credit exhaustion: fail-closed (exit 7), because
+        // retrying the same command won't help until the account is fixed.
+        let backend = makeBackend()
+        setHandler(status: 432, body: Data("Plan limit".utf8))
+
+        await #expect(throws: BackendError.self) {
+            _ = try await backend.search(SearchOptions(query: "test"))
+        }
+
+        do {
+            _ = try await backend.search(SearchOptions(query: "test"))
+        } catch let error as BackendError {
+            #expect(error.code == .auth)
+            #expect(error.code.sxExitCode == .auth)
+            #expect(error.message.contains("432"))
+        }
+    }
+
+    @Test func status433ThrowsFailClosed() async throws {
+        // Tavily 433 = out of credits: same fail-closed (exit 7) treatment as 432.
+        let backend = makeBackend()
+        setHandler(status: 433, body: Data("Out of credits".utf8))
+
+        await #expect(throws: BackendError.self) {
+            _ = try await backend.search(SearchOptions(query: "test"))
+        }
+
+        do {
+            _ = try await backend.search(SearchOptions(query: "test"))
+        } catch let error as BackendError {
+            #expect(error.code == .auth)
+            #expect(error.code.sxExitCode == .auth)
+            #expect(error.message.contains("433"))
+        }
+    }
+
     // MARK: Malformed JSON
 
     @Test func malformedJSONThrowsInvalidResponse() async throws {

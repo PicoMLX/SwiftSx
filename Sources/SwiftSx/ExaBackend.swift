@@ -9,8 +9,31 @@ import FoundationNetworking
 
 /// The JSON body sent to the Exa `/search` API endpoint.
 private struct ExaAPIRequest: Encodable {
+    /// Upper bound on page-text characters requested per result.
+    ///
+    /// Unbounded `text` can return whole page bodies (megabytes for long pages),
+    /// which the JSON / clean renderers emit verbatim. Bounding the *fetch* keeps
+    /// a search lightweight; the plain renderer additionally caps display.
+    static let maxTextCharacters = 2000
+
     let query: String
     let numResults: Int
+    /// Requests page contents for each result.
+    ///
+    /// Without a `contents` object the Exa `/search` endpoint returns only
+    /// metadata (title/url) — no `text` or `summary` — so every mapped snippet
+    /// would be empty. Asking for bounded `text` populates the field the mapper
+    /// reads without pulling full page bodies.
+    let contents: Contents
+
+    /// The `contents` sub-object. `text.maxCharacters` bounds the page text Exa
+    /// returns per result (vs. unbounded `text: true`).
+    struct Contents: Encodable {
+        let text: Text
+        struct Text: Encodable {
+            let maxCharacters: Int
+        }
+    }
 }
 
 /// The JSON envelope returned by the Exa `/search` API endpoint.
@@ -282,7 +305,11 @@ public struct ExaBackend: SearchBackend {
             n = 10
         }
 
-        let requestBody = ExaAPIRequest(query: queryString, numResults: n)
+        let requestBody = ExaAPIRequest(
+            query: queryString,
+            numResults: n,
+            contents: .init(text: .init(maxCharacters: ExaAPIRequest.maxTextCharacters))
+        )
         let bodyData: Data
         do {
             bodyData = try JSONEncoder().encode(requestBody)

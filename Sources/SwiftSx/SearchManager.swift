@@ -74,10 +74,12 @@ public struct SearchManager: Sendable {
     /// - Returns: A ``SearchOutcome`` naming the backend that responded.
     /// - Throws: An aggregate ``SxError`` if every backend in the chain fails.
     public func search(_ options: SearchOptions) async throws -> SearchOutcome {
-        /// A failure record: the display string and whether it was fail-closed.
+        /// A failure record: the display label, whether it was fail-closed, and
+        /// whether it was a usage error.
         struct FailureRecord {
             let label: String
             let isFailClosed: Bool
+            let isUsage: Bool
         }
 
         var failures: [FailureRecord] = []
@@ -95,13 +97,15 @@ public struct SearchManager: Sendable {
             } catch {
                 failures.append(FailureRecord(
                     label: "\(primary.name): \(reasonString(from: error))",
-                    isFailClosed: isFailClosed(error)
+                    isFailClosed: isFailClosed(error),
+                    isUsage: isUsageError(error)
                 ))
             }
         } else {
             failures.append(FailureRecord(
                 label: "\(primary.name): not configured — \(Self.configurationHint(for: primary.name))",
-                isFailClosed: true
+                isFailClosed: true,
+                isUsage: false
             ))
         }
 
@@ -111,7 +115,8 @@ public struct SearchManager: Sendable {
                 // "not configured" counts as fail-closed (same as .unavailable).
                 failures.append(FailureRecord(
                     label: "\(fallback.name): not configured — \(Self.configurationHint(for: fallback.name))",
-                    isFailClosed: true
+                    isFailClosed: true,
+                    isUsage: false
                 ))
                 continue
             }
@@ -125,7 +130,8 @@ public struct SearchManager: Sendable {
             } catch {
                 failures.append(FailureRecord(
                     label: "\(fallback.name): \(reasonString(from: error))",
-                    isFailClosed: isFailClosed(error)
+                    isFailClosed: isFailClosed(error),
+                    isUsage: isUsageError(error)
                 ))
             }
         }
@@ -134,8 +140,20 @@ public struct SearchManager: Sendable {
         let message = "all search backends failed:\n"
             + failures.map { "  - \($0.label)" }.joined(separator: "\n")
 
-        // Exit code is .auth only when every failure was fail-closed.
-        let exitCode: SxExitCode = failures.allSatisfy(\.isFailClosed) ? .auth : .general
+        // Aggregate exit code, mirroring the per-backend classification:
+        // - fail-closed (exit 7) only when *every* failure was fail-closed;
+        // - usage (exit 2) when *every* failure was a usage error, so a bad
+        //   query/options still surfaces the "fix the command" signal even on
+        //   the fallback path (not just via `searchExplicit`);
+        // - otherwise general (exit 1).
+        let exitCode: SxExitCode
+        if failures.allSatisfy(\.isFailClosed) {
+            exitCode = .auth
+        } else if failures.allSatisfy(\.isUsage) {
+            exitCode = .usage
+        } else {
+            exitCode = .general
+        }
         throw SxError(exitCode, message)
     }
 
@@ -178,6 +196,13 @@ public struct SearchManager: Sendable {
         } catch let error as BackendError {
             // Convert to the stable exit-code contract, mirroring the fallback path.
             throw SxError(error.code.sxExitCode, error.message)
+        } catch {
+            // Any other error — e.g. a raw URLSession or decoder error that
+            // escaped a backend's wrapping — must not bypass the contract. Map
+            // it to a stable exit code instead of leaking a raw description,
+            // mirroring how the fallback path treats a non-BackendError (not
+            // fail-closed → exit 1).
+            throw SxError(.general, "engine '\(engine)' failed: \(error)")
         }
     }
 
@@ -209,8 +234,15 @@ public struct SearchManager: Sendable {
     private func isFailClosed(_ error: any Error) -> Bool {
         guard let be = error as? BackendError else { return false }
         switch be.code {
-        case .unavailable, .auth, .network: return true
-        case .rateLimit, .invalidResponse:  return false
+        case .unavailable, .auth, .network:        return true
+        case .rateLimit, .invalidResponse, .usage: return false
         }
+    }
+
+    /// Returns `true` when the error is a usage error (`.usage`, exit 2) — a bad
+    /// command/config the agent should fix rather than retry. Used to aggregate
+    /// an all-usage failure chain back to exit 2.
+    private func isUsageError(_ error: any Error) -> Bool {
+        (error as? BackendError)?.code == .usage
     }
 }
