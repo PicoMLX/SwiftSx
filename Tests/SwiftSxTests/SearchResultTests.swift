@@ -199,23 +199,22 @@ import Testing
     }
 
     @Test func leniencyPreservesNonStringAddressValues() throws {
-        // Scalar sub-fields are preserved; non-string scalars are stringified
-        // rather than dropped (matching the data, if not the type, of upstream's
-        // map[string]interface{}).
+        // Scalar sub-fields keep their JSON type (string / number / bool) via
+        // JSONValue, matching upstream's map[string]interface{}.
         let json = #"{"address": {"city": "Tokyo", "count": 3, "active": true}}"#
         let data = Data(json.utf8)
         let result = try JSONDecoder().decode(SearchResult.self, from: data)
-        #expect(result.address == ["city": "Tokyo", "count": "3", "active": "true"])
+        #expect(result.address == ["city": "Tokyo", "count": 3, "active": true])
     }
 
     @Test func leniencyPreservesLargeIntegerAddressValues() throws {
-        // A value exceeding Int32 must decode as an integer string, not fall
-        // through to Double (which would emit scientific notation / lose
-        // precision). Decoding uses Int64, so this holds on 32-bit platforms too.
+        // A value exceeding Int32 must decode as an Int64, not fall through to
+        // Double (which would lose precision / emit scientific notation). Holds
+        // on 32-bit platforms too.
         let json = #"{"address": {"id": 9000000000}}"#
         let data = Data(json.utf8)
         let result = try JSONDecoder().decode(SearchResult.self, from: data)
-        #expect(result.address == ["id": "9000000000"])
+        #expect(result.address == ["id": 9000000000])
     }
 
     @Test func addressNilWhenAbsent() throws {
