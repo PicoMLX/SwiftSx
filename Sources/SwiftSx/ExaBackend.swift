@@ -37,21 +37,10 @@ private struct ExaAPIRequest: Encodable {
             let maxCharacters: Int
         }
     }
-
-    enum CodingKeys: String, CodingKey {
-        case query
-        case numResults
-        case contents
-        case includeDomains
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(query, forKey: .query)
-        try container.encode(numResults, forKey: .numResults)
-        try container.encode(contents, forKey: .contents)
-        try container.encodeIfPresent(includeDomains, forKey: .includeDomains)
-    }
+    // Encoding is compiler-synthesized: the stored property names already match
+    // the Exa API keys (query/numResults/contents/includeDomains), and the
+    // synthesized encoder uses encodeIfPresent for the optional includeDomains
+    // (so it is omitted when nil).
 }
 
 /// The JSON envelope returned by the Exa `/search` API endpoint.
