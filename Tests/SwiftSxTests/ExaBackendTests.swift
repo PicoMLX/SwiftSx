@@ -28,6 +28,9 @@ private func exaAPIJSON(results: [[String: String?]] = []) -> Data {
 }
 
 /// Build a minimal Exa MCP `tools/call` result with `structuredContent.results[]`.
+///
+/// `CallTool.Result.content` is a required field in the MCP SDK, so an empty
+/// `content` array is always included alongside the structured payload.
 private func exaMCPStructuredJSON(results: [[String: String]] = []) -> Data {
     let entries = results.map { dict in
         let fields = dict.map { k, v in "\"\(k)\": \"\(v)\"" }.joined(separator: ", ")
@@ -35,6 +38,7 @@ private func exaMCPStructuredJSON(results: [[String: String]] = []) -> Data {
     }
     let body = """
     {
+      "content": [],
       "structuredContent": {
         "results": [\(entries.joined(separator: ", "))]
       }
@@ -60,14 +64,102 @@ private func exaMCPMarkdownContentJSON(text: String) -> Data {
     return Data(body.utf8)
 }
 
-/// Wrap a `tools/call` result payload inside the outer JSON-RPC envelope that
-/// `MCPHTTPClient` decodes (the envelope's `result` key holds the tool result).
-private func mcpRPCEnvelope(resultJSON: Data) -> Data {
-    guard let resultString = String(data: resultJSON, encoding: .utf8) else {
-        return Data()
+// MARK: - MCP SDK wire helpers
+//
+// The official MCP Swift SDK drives a three-message JSON-RPC lifecycle over
+// HTTP: `initialize` → `notifications/initialized` → `tools/call`. Each request
+// carries a freshly generated (random UUID) `id`, so a mock cannot return canned
+// responses — it must parse each request and echo its `id` back, or the SDK's
+// client never matches the response to its pending request and hangs.
+
+/// A minimal valid `initialize` result body (the `result` field of the envelope).
+private let mcpInitializeResultJSON = Data("""
+{"protocolVersion":"2025-11-25","capabilities":{},"serverInfo":{"name":"exa-mock","version":"1.0.0"}}
+""".utf8)
+
+private extension URLRequest {
+    /// The request body, falling back to draining `httpBodyStream` when
+    /// `httpBody` is nil. `URLSession` converts bodies to a stream for
+    /// upload/`bytes(for:)` requests, so the `URLProtocol` sees the stream.
+    var sx_bodyData: Data {
+        if let httpBody { return httpBody }
+        guard let stream = httpBodyStream else { return Data() }
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        let size = 4096
+        let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: size)
+        defer { buffer.deallocate() }
+        while stream.hasBytesAvailable {
+            let read = stream.read(buffer, maxLength: size)
+            if read <= 0 { break }
+            data.append(buffer, count: read)
+        }
+        return data
     }
-    let body = "{\"jsonrpc\": \"2.0\", \"id\": 2, \"result\": \(resultString)}"
-    return Data(body.utf8)
+}
+
+/// Serialize a parsed JSON-RPC `id` (string or number) back into a JSON token.
+private func mcpIDToken(_ id: Any?) -> String {
+    switch id {
+    case let s as String: return "\"\(s)\""
+    case let n as Int:    return "\(n)"
+    default:              return "null"
+    }
+}
+
+/// Wrap a `result` object in a JSON-RPC success envelope echoing `id`.
+private func mcpResultEnvelope(id: Any?, result: Data) -> Data {
+    let resultString = String(data: result, encoding: .utf8) ?? "{}"
+    return Data("{\"jsonrpc\":\"2.0\",\"id\":\(mcpIDToken(id)),\"result\":\(resultString)}".utf8)
+}
+
+/// Build a method-aware `MockURLProtocol` handler that speaks the SDK's JSON-RPC
+/// wire protocol: it answers `initialize` with a minimal valid result, accepts
+/// `notifications/initialized`, and returns the supplied outcome for
+/// `tools/call`, echoing each request's `id`.
+///
+/// - Parameters:
+///   - toolCallStatus: HTTP status for the `tools/call` response (default 200).
+///     For a non-2xx status the SDK throws on the status before reading the body.
+///   - toolCallResult: the `tools/call` `result` object (used only for 2xx).
+///   - capture: optional sink that receives the decoded `tools/call` arguments.
+private func mcpHandler(
+    toolCallStatus: Int = 200,
+    toolCallResult: Data = exaMCPStructuredJSON(),
+    capture: TestLockedBox<[String: Any]?>? = nil
+) -> MockURLProtocol.Handler {
+    return { request in
+        let obj = (try? JSONSerialization.jsonObject(with: request.sx_bodyData)) as? [String: Any]
+        let method = obj?["method"] as? String
+
+        func respond(_ status: Int, _ data: Data) -> (HTTPURLResponse, Data) {
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: status,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            return (response, data)
+        }
+
+        switch method {
+        case "initialize":
+            return respond(200, mcpResultEnvelope(id: obj?["id"], result: mcpInitializeResultJSON))
+        case "notifications/initialized":
+            return respond(202, Data())   // notification — no JSON-RPC response expected
+        case "tools/call":
+            if let capture, let params = obj?["params"] as? [String: Any] {
+                capture.withLock { $0 = params["arguments"] as? [String: Any] }
+            }
+            guard (200...299).contains(toolCallStatus) else {
+                return respond(toolCallStatus, Data("error".utf8))
+            }
+            return respond(toolCallStatus, mcpResultEnvelope(id: obj?["id"], result: toolCallResult))
+        default:
+            return respond(200, Data())
+        }
+    }
 }
 
 // MARK: - makeAPIRequest: body fields
@@ -453,34 +545,14 @@ struct ExaMCPSearchTests {
         )
     }
 
-    private func setHandler(status: Int, body: Data) {
-        MockURLProtocol.handler = { request in
-            let response = HTTPURLResponse(
-                url: request.url!,
-                statusCode: status,
-                httpVersion: "HTTP/1.1",
-                headerFields: ["Content-Type": "application/json"]
-            )!
-            return (response, body)
-        }
-    }
-
     // MARK: structuredContent path
 
     @Test func mcpStructuredContentResultsParsed() async throws {
         let backend = makeBackend()
-
-        // MCPHTTPClient will call `initialize` (id 1) then `tools/call` (id 2).
-        // The mock always returns success; for initialize we return a minimal result.
-        MockURLProtocol.setSequentialResponses([
-            // initialize response
-            (status: 200, body: Data(#"{"jsonrpc":"2.0","id":1,"result":{}}"#.utf8)),
-            // tools/call response with structuredContent
-            (status: 200, body: mcpRPCEnvelope(resultJSON: exaMCPStructuredJSON(results: [
-                ["title": "Swift Forums", "url": "https://forums.swift.org", "text": "Swift community"],
-                ["title": "Swift Blog", "url": "https://swift.org/blog", "summary": "Official blog"],
-            ]))),
-        ])
+        MockURLProtocol.handler = mcpHandler(toolCallResult: exaMCPStructuredJSON(results: [
+            ["title": "Swift Forums", "url": "https://forums.swift.org", "text": "Swift community"],
+            ["title": "Swift Blog", "url": "https://swift.org/blog", "summary": "Official blog"],
+        ]))
 
         let results = try await backend.search(SearchOptions(query: "swift"))
         #expect(results.count == 2)
@@ -493,18 +565,16 @@ struct ExaMCPSearchTests {
 
     @Test func mcpStructuredContentFirstNonEmptyPreference() async throws {
         let backend = makeBackend()
-        MockURLProtocol.setSequentialResponses([
-            // initialize response
-            (status: 200, body: Data(#"{"jsonrpc":"2.0","id":1,"result":{}}"#.utf8)),
-            // tools/call response: text is empty → content wins
-            (status: 200, body: mcpRPCEnvelope(resultJSON: Data("""
-            {
-              "structuredContent": {
-                "results": [{"title":"T","url":"https://t.com","text":"","content":"from content","summary":"from summary"}]
-              }
-            }
-            """.utf8))),
-        ])
+        // text is empty → content wins (content is still a required field).
+        let resultJSON = Data("""
+        {
+          "content": [],
+          "structuredContent": {
+            "results": [{"title":"T","url":"https://t.com","text":"","content":"from content","summary":"from summary"}]
+          }
+        }
+        """.utf8)
+        MockURLProtocol.handler = mcpHandler(toolCallResult: resultJSON)
 
         let results = try await backend.search(SearchOptions(query: "test"))
         #expect(results.count == 1)
@@ -520,12 +590,7 @@ struct ExaMCPSearchTests {
                 [Swift.org](https://swift.org) - The home of Swift
                 [Swift Forums](https://forums.swift.org) - Community discussions
                 """
-        MockURLProtocol.setSequentialResponses([
-            // initialize response
-            (status: 200, body: Data(#"{"jsonrpc":"2.0","id":1,"result":{}}"#.utf8)),
-            // tools/call response with markdown content
-            (status: 200, body: mcpRPCEnvelope(resultJSON: exaMCPMarkdownContentJSON(text: markdownText))),
-        ])
+        MockURLProtocol.handler = mcpHandler(toolCallResult: exaMCPMarkdownContentJSON(text: markdownText))
 
         let results = try await backend.search(SearchOptions(query: "swift"))
         #expect(results.count == 2)
@@ -538,12 +603,9 @@ struct ExaMCPSearchTests {
 
     @Test func mcpMarkdownLinkNoMatchYieldsEmpty() async throws {
         let backend = makeBackend()
-        MockURLProtocol.setSequentialResponses([
-            // initialize response
-            (status: 200, body: Data(#"{"jsonrpc":"2.0","id":1,"result":{}}"#.utf8)),
-            // tools/call response: plain text with no markdown links
-            (status: 200, body: mcpRPCEnvelope(resultJSON: exaMCPMarkdownContentJSON(text: "No links here at all."))),
-        ])
+        MockURLProtocol.handler = mcpHandler(
+            toolCallResult: exaMCPMarkdownContentJSON(text: "No links here at all.")
+        )
 
         let results = try await backend.search(SearchOptions(query: "test"))
         #expect(results.isEmpty)
@@ -551,81 +613,112 @@ struct ExaMCPSearchTests {
 
     @Test func mcpNumResultsCapApplied() async throws {
         let backend = makeBackend()
-        MockURLProtocol.setSequentialResponses([
-            // initialize response
-            (status: 200, body: Data(#"{"jsonrpc":"2.0","id":1,"result":{}}"#.utf8)),
-            // tools/call response: 3 results, cap should trim to 2
-            (status: 200, body: mcpRPCEnvelope(resultJSON: exaMCPStructuredJSON(results: [
-                ["title": "A", "url": "https://a.com"],
-                ["title": "B", "url": "https://b.com"],
-                ["title": "C", "url": "https://c.com"],
-            ]))),
-        ])
+        MockURLProtocol.handler = mcpHandler(toolCallResult: exaMCPStructuredJSON(results: [
+            ["title": "A", "url": "https://a.com"],
+            ["title": "B", "url": "https://b.com"],
+            ["title": "C", "url": "https://c.com"],
+        ]))
 
         let results = try await backend.search(SearchOptions(query: "test", numResults: 2))
         #expect(results.count == 2)
     }
 
+    // MARK: site forwarding (newly supported in MCP mode)
+
+    @Test func mcpForwardsSiteAsIncludeDomains() async throws {
+        let backend = makeBackend()
+        let captured = TestLockedBox<[String: Any]?>(nil)
+        MockURLProtocol.handler = mcpHandler(
+            toolCallResult: exaMCPStructuredJSON(results: [["title": "x", "url": "https://x.com"]]),
+            capture: captured
+        )
+
+        _ = try await backend.search(SearchOptions(query: "swift", site: "github.com", numResults: 5))
+
+        let args = captured.withLock { $0 }
+        #expect(args?["query"] as? String == "swift")
+        #expect(args?["numResults"] as? Int == 5)
+        #expect(args?["num_results"] as? Int == 5)
+        #expect(args?["includeDomains"] as? [String] == ["github.com"])
+    }
+
+    @Test func mcpOmitsIncludeDomainsWhenSiteEmpty() async throws {
+        let backend = makeBackend()
+        let captured = TestLockedBox<[String: Any]?>(nil)
+        MockURLProtocol.handler = mcpHandler(
+            toolCallResult: exaMCPStructuredJSON(results: [["title": "x", "url": "https://x.com"]]),
+            capture: captured
+        )
+
+        _ = try await backend.search(SearchOptions(query: "swift"))
+
+        let args = captured.withLock { $0 }
+        #expect(args?["query"] as? String == "swift")
+        #expect(args?["includeDomains"] == nil)
+    }
+
+    // MARK: unparseable result
+
+    @Test func mcpUnparseableResultThrowsInvalidResponse() async throws {
+        // A 2xx response whose `result` does not match the tools/call shape (no
+        // required `content` field) is unparseable → .invalidResponse.
+        let backend = makeBackend()
+        MockURLProtocol.handler = mcpHandler(toolCallResult: Data(#"{"unexpected":"shape"}"#.utf8))
+
+        do {
+            _ = try await backend.search(SearchOptions(query: "test"))
+            Issue.record("Expected a BackendError to be thrown")
+        } catch let error as BackendError {
+            #expect(error.code == .invalidResponse)
+        }
+    }
+
     // MARK: MCP server status → error code
     //
-    // The MCP request sequence is `initialize` (id 1) then `tools/call` (id 2),
-    // so the status under test is returned on the second sequential response.
+    // `initialize` always succeeds; the status under test is returned on the
+    // `tools/call` response. The SDK collapses HTTP status into MCPError, so the
+    // class of failure is asserted via `error.code` (the exit-code contract).
 
     @Test func mcpStatus401ThrowsAuthError() async throws {
         let backend = makeBackend()
-        MockURLProtocol.setSequentialResponses([
-            (status: 200, body: Data(#"{"jsonrpc":"2.0","id":1,"result":{}}"#.utf8)),
-            (status: 401, body: Data("Unauthorized".utf8)),
-        ])
+        MockURLProtocol.handler = mcpHandler(toolCallStatus: 401)
 
         do {
             _ = try await backend.search(SearchOptions(query: "test"))
             Issue.record("Expected a BackendError to be thrown")
         } catch let error as BackendError {
             #expect(error.code == .auth)
-            #expect(error.message.contains("401"))
         }
     }
 
     @Test func mcpStatus403ThrowsAuthError() async throws {
         let backend = makeBackend()
-        MockURLProtocol.setSequentialResponses([
-            (status: 200, body: Data(#"{"jsonrpc":"2.0","id":1,"result":{}}"#.utf8)),
-            (status: 403, body: Data("Forbidden".utf8)),
-        ])
+        MockURLProtocol.handler = mcpHandler(toolCallStatus: 403)
 
         do {
             _ = try await backend.search(SearchOptions(query: "test"))
             Issue.record("Expected a BackendError to be thrown")
         } catch let error as BackendError {
             #expect(error.code == .auth)
-            #expect(error.message.contains("403"))
         }
     }
 
     @Test func mcpStatus429ThrowsRateLimitError() async throws {
         let backend = makeBackend()
-        MockURLProtocol.setSequentialResponses([
-            (status: 200, body: Data(#"{"jsonrpc":"2.0","id":1,"result":{}}"#.utf8)),
-            (status: 429, body: Data("Too Many Requests".utf8)),
-        ])
+        MockURLProtocol.handler = mcpHandler(toolCallStatus: 429)
 
         do {
             _ = try await backend.search(SearchOptions(query: "test"))
             Issue.record("Expected a BackendError to be thrown")
         } catch let error as BackendError {
             #expect(error.code == .rateLimit)
-            #expect(error.message.contains("429"))
         }
     }
 
     @Test func mcpStatus500ThrowsNetworkError() async throws {
         // Regression guard: genuine server errors stay classified as network.
         let backend = makeBackend()
-        MockURLProtocol.setSequentialResponses([
-            (status: 200, body: Data(#"{"jsonrpc":"2.0","id":1,"result":{}}"#.utf8)),
-            (status: 500, body: Data("Server Error".utf8)),
-        ])
+        MockURLProtocol.handler = mcpHandler(toolCallStatus: 500)
 
         do {
             _ = try await backend.search(SearchOptions(query: "test"))
@@ -683,16 +776,23 @@ struct ExaAutoModeTests {
             transport:  transport
         )
 
-        MockURLProtocol.setSequentialResponses([
-            // First request = API call → 401
-            (status: 401, body: Data("Unauthorized".utf8)),
-            // Second request = MCP initialize → success
-            (status: 200, body: Data(#"{"jsonrpc":"2.0","id":1,"result":{}}"#.utf8)),
-            // Third request = MCP tools/call → success with results
-            (status: 200, body: mcpRPCEnvelope(resultJSON: exaMCPStructuredJSON(results: [
-                ["title": "From MCP", "url": "https://mcp.example.com"],
-            ]))),
-        ])
+        // Dispatch by host: the API endpoint fails with 401; the MCP endpoint
+        // speaks the SDK's JSON-RPC protocol (initialize → notification → call).
+        let mcp = mcpHandler(toolCallResult: exaMCPStructuredJSON(results: [
+            ["title": "From MCP", "url": "https://mcp.example.com"],
+        ]))
+        MockURLProtocol.handler = { request in
+            if request.url?.host == "api.exa.ai" {
+                let response = HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 401,
+                    httpVersion: "HTTP/1.1",
+                    headerFields: ["Content-Type": "application/json"]
+                )!
+                return (response, Data("Unauthorized".utf8))
+            }
+            return try mcp(request)
+        }
 
         let results = try await backend.search(SearchOptions(query: "swift"))
         #expect(results.count == 1)
@@ -710,29 +810,22 @@ struct ExaAutoModeTests {
             transport:  transport
         )
 
-        // Use a lock-guarded counter so the @Sendable handler captures no mutable var.
+        // Lock-guarded counter so the @Sendable handler captures no mutable var.
         let requestCount = TestLockedBox(0)
-        MockURLProtocol.setSequentialResponses([
-            // First request = MCP initialize
-            (status: 200, body: Data(#"{"jsonrpc":"2.0","id":1,"result":{}}"#.utf8)),
-            // Second request = MCP tools/call
-            (status: 200, body: mcpRPCEnvelope(resultJSON: exaMCPStructuredJSON(results: [
-                ["title": "MCP Result", "url": "https://mcp.example.com"],
-            ]))),
-        ])
-        // Wrap the sequential handler to also count requests.
-        let baseHandler = MockURLProtocol.handler!
+        let mcp = mcpHandler(toolCallResult: exaMCPStructuredJSON(results: [
+            ["title": "MCP Result", "url": "https://mcp.example.com"],
+        ]))
         MockURLProtocol.handler = { request in
             requestCount.withLock { $0 += 1 }
-            return try baseHandler(request)
+            return try mcp(request)
         }
 
         let results = try await backend.search(SearchOptions(query: "swift"))
         #expect(results.count == 1)
         #expect(results[0].title == "MCP Result")
-        // Verify no API call was made (API call would be the first request).
-        // requestCount == 2 means only initialize + tools/call were made.
-        #expect(requestCount.withLock { $0 } == 2)
+        // No API call is made (no key). The MCP lifecycle is three POSTs:
+        // initialize, notifications/initialized, and tools/call.
+        #expect(requestCount.withLock { $0 } == 3)
     }
 
     @Test func autoModeThrowsWhenNeitherConfigured() async throws {
