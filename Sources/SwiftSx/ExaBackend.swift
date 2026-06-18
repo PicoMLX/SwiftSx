@@ -9,37 +9,38 @@ import FoundationNetworking
 
 /// The JSON body sent to the Exa `/search` API endpoint.
 private struct ExaAPIRequest: Encodable {
+    /// Upper bound on page-text characters requested per result.
+    ///
+    /// Unbounded `text` can return whole page bodies (megabytes for long pages),
+    /// which the JSON / clean renderers emit verbatim. Bounding the *fetch* keeps
+    /// a search lightweight; the plain renderer additionally caps display.
+    static let maxTextCharacters = 2000
+
     let query: String
     let numResults: Int
     /// Requests page contents for each result.
     ///
     /// Without a `contents` object the Exa `/search` endpoint returns only
     /// metadata (title/url) — no `text` or `summary` — so every mapped snippet
-    /// would be empty. Asking for `text` populates the field the mapper reads.
+    /// would be empty. Asking for bounded `text` populates the field the mapper
+    /// reads without pulling full page bodies.
     let contents: Contents
     /// Domain allow-list (Exa's `includeDomains`). When set, Exa restricts
     /// results to these domains — preferred over a lexical `site:` query prefix.
     let includeDomains: [String]?
 
-    /// The `contents` sub-object; `text: true` asks Exa to include page text.
+    /// The `contents` sub-object. `text.maxCharacters` bounds the page text Exa
+    /// returns per result (vs. unbounded `text: true`).
     struct Contents: Encodable {
-        let text: Bool
+        let text: Text
+        struct Text: Encodable {
+            let maxCharacters: Int
+        }
     }
-
-    enum CodingKeys: String, CodingKey {
-        case query
-        case numResults
-        case contents
-        case includeDomains
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(query, forKey: .query)
-        try container.encode(numResults, forKey: .numResults)
-        try container.encode(contents, forKey: .contents)
-        try container.encodeIfPresent(includeDomains, forKey: .includeDomains)
-    }
+    // Encoding is compiler-synthesized: the stored property names already match
+    // the Exa API keys (query/numResults/contents/includeDomains), and the
+    // synthesized encoder uses encodeIfPresent for the optional includeDomains
+    // (so it is omitted when nil).
 }
 
 /// The JSON envelope returned by the Exa `/search` API endpoint.
@@ -312,7 +313,7 @@ public struct ExaBackend: SearchBackend {
         let requestBody = ExaAPIRequest(
             query: options.query,
             numResults: n,
-            contents: .init(text: true),
+            contents: .init(text: .init(maxCharacters: ExaAPIRequest.maxTextCharacters)),
             includeDomains: includeDomains
         )
         let bodyData: Data

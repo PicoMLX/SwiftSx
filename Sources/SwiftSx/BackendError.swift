@@ -4,12 +4,16 @@ public enum BackendErrorCode: Sendable, Equatable {
     case unavailable
     /// A network-level failure (DNS, connection refused, timeout, etc.).
     case network
-    /// Authentication or authorisation failure (HTTP 401/403).
+    /// Authentication or authorisation failure (HTTP 401/403; also used for hard
+    /// plan/quota limits, e.g. Tavily 432/433, that require account action).
     case auth
     /// Rate-limit exceeded (HTTP 429).
     case rateLimit
     /// The backend returned a response that could not be parsed.
     case invalidResponse
+    /// The request was malformed / bad input (e.g. HTTP 400). The caller can fix
+    /// the query or options and retry — maps to exit 2 (usage).
+    case usage
 }
 
 /// A typed failure from a specific search backend.
@@ -43,6 +47,9 @@ public extension BackendErrorCode {
     ///
     /// Transient / recoverable codes (`.rateLimit`, `.invalidResponse`) map to
     /// `.general` (1).
+    ///
+    /// The bad-input code (`.usage`) maps to `.usage` (2) so the agent can fix
+    /// the command and retry.
     var sxExitCode: SxExitCode {
         switch self {
         case .unavailable:       return .auth
@@ -50,6 +57,7 @@ public extension BackendErrorCode {
         case .network:           return .auth
         case .rateLimit:         return .general
         case .invalidResponse:   return .general
+        case .usage:             return .usage
         }
     }
 }
