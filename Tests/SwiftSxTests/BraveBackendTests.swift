@@ -494,6 +494,50 @@ struct BraveSearchTests {
         #expect(results.map(\.title) == ["W", "N"])
     }
 
+    @Test func mixedRankingOrdersResults() async throws {
+        let backend = makeBackend()
+        // Brave's `mixed.main` dictates the cross-section display order. Here it
+        // interleaves web[1], all news, then web[0] — which is NOT the plain
+        // web→news→videos concatenation ([W0, W1, N0]).
+        let body = Data("""
+        {
+          "mixed": {"main": [
+            {"type": "web", "index": 1},
+            {"type": "news", "all": true},
+            {"type": "web", "index": 0}
+          ]},
+          "web":  {"results": [
+            {"title": "W0", "url": "https://w0.com", "description": "web0"},
+            {"title": "W1", "url": "https://w1.com", "description": "web1"}
+          ]},
+          "news": {"results": [
+            {"title": "N0", "url": "https://n0.com", "description": "news0"}
+          ]}
+        }
+        """.utf8)
+        setHandler(status: 200, body: body)
+
+        let results = try await backend.search(SearchOptions(query: "test"))
+        #expect(results.map(\.title) == ["W1", "N0", "W0"])
+    }
+
+    @Test func mixedRankingKeepsUnreferencedResults() async throws {
+        let backend = makeBackend()
+        // `mixed.main` references only web[0]; the unreferenced news result must
+        // still be returned (appended), never silently dropped.
+        let body = Data("""
+        {
+          "mixed": {"main": [{"type": "web", "index": 0}]},
+          "web":  {"results": [{"title": "W0", "url": "https://w0.com", "description": "web0"}]},
+          "news": {"results": [{"title": "N0", "url": "https://n0.com", "description": "news0"}]}
+        }
+        """.utf8)
+        setHandler(status: 200, body: body)
+
+        let results = try await backend.search(SearchOptions(query: "test"))
+        #expect(results.map(\.title) == ["W0", "N0"])
+    }
+
     @Test func status201AlsoDecodes() async throws {
         let backend = makeBackend()
         setHandler(status: 201, body: braveJSON())

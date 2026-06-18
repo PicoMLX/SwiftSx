@@ -12,6 +12,8 @@ private struct BraveResponse: Decodable {
     let web: Section?
     let news: Section?
     let videos: Section?
+    /// Brave's cross-section display ranking (see `Mixed`).
+    let mixed: Mixed?
 
     /// A result section (`web`, `news`, or `videos`). Each carries a `results`
     /// array of items sharing the same title/url/description shape.
@@ -23,6 +25,22 @@ private struct BraveResponse: Decodable {
         let title: String?
         let url: String?
         let description: String?
+    }
+
+    /// Brave's `mixed` ranking. `main` lists references to results in the order
+    /// Brave intends them to appear in the primary column, interleaving the
+    /// `web` / `news` / `videos` sections.
+    struct Mixed: Decodable {
+        let main: [Ref]?
+
+        /// A reference into a typed section. `all == true` means "insert every
+        /// result of `type` at this position"; otherwise the single result at
+        /// `index`.
+        struct Ref: Decodable {
+            let type: String
+            let index: Int?
+            let all: Bool?
+        }
     }
 }
 
@@ -96,15 +114,10 @@ public struct BraveBackend: SearchBackend {
         case 200...299:
             do {
                 let decoded = try JSONDecoder().decode(BraveResponse.self, from: data)
-                // Merge across the sections Brave returned (web, then news, then
-                // videos), preserving order. Cap to the requested count: Brave's
-                // `count` only limits the web section, so without this the merged
-                // list could exceed numResults (and --first / --count 1 could
-                // surface a web hit while ignoring a higher-ranked news/video
-                // item). Brave's `mixed` ranking is not yet reconstructed.
-                let items = (decoded.web?.results    ?? [])
-                          + (decoded.news?.results   ?? [])
-                          + (decoded.videos?.results ?? [])
+                // Order results by Brave's `mixed` ranking, then cap to the
+                // requested count: Brave's `count` only limits the web section,
+                // so the merged list could otherwise exceed numResults.
+                let items = Self.orderedItems(decoded)
                 return items.prefix(Self.resolvedCount(options.numResults)).map { item in
                     SearchResult(
                         title:   item.title       ?? "",
@@ -150,6 +163,57 @@ public struct BraveBackend: SearchBackend {
     static func resolvedCount(_ raw: Int) -> Int {
         if raw <= 0 { return 10 }
         return min(raw, 20)
+    }
+
+    /// Order Brave's decoded sections by its `mixed.main` ranking.
+    ///
+    /// Brave returns separate `web` / `news` / `videos` sections plus a `mixed`
+    /// object whose `main` array gives the intended cross-section display order
+    /// (each entry references a section by `type` and either a single `index` or
+    /// `all` results of that type). Honouring it means `--first` / `--count`
+    /// surface the items Brave ranked highest, not just the first `web` hit.
+    ///
+    /// Falls back to a `web → news → videos` concatenation when `mixed` is
+    /// absent or empty (e.g. a single-`result_filter` query). Any results Brave
+    /// returned but did not reference in `main` are appended afterwards, so
+    /// nothing the API sent is dropped.
+    private static func orderedItems(_ decoded: BraveResponse) -> [BraveResponse.Item] {
+        let sections: [String: [BraveResponse.Item]] = [
+            "web":    decoded.web?.results    ?? [],
+            "news":   decoded.news?.results   ?? [],
+            "videos": decoded.videos?.results ?? [],
+        ]
+        let fallbackOrder = ["web", "news", "videos"]
+
+        guard let main = decoded.mixed?.main, !main.isEmpty else {
+            return fallbackOrder.flatMap { sections[$0] ?? [] }
+        }
+
+        var ordered: [BraveResponse.Item] = []
+        var consumed: [String: Set<Int>] = [:]
+
+        // Emit a single result, de-duplicating so the same item can't appear
+        // twice (e.g. a `type` referenced by both `all` and `index`).
+        func emit(_ type: String, _ index: Int) {
+            guard let items = sections[type], items.indices.contains(index) else { return }
+            guard consumed[type, default: []].insert(index).inserted else { return }
+            ordered.append(items[index])
+        }
+
+        for ref in main {
+            guard sections[ref.type] != nil else { continue }   // ignore unsupported types
+            if ref.all == true {
+                for i in (sections[ref.type] ?? []).indices { emit(ref.type, i) }
+            } else if let index = ref.index {
+                emit(ref.type, index)
+            }
+        }
+
+        // Defensive: append any section items `main` didn't reference.
+        for type in fallbackOrder {
+            for i in (sections[type] ?? []).indices { emit(type, i) }
+        }
+        return ordered
     }
 
     /// Build the `HTTPRequest` for the given options.
