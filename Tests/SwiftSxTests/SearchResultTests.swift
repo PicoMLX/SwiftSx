@@ -208,6 +208,16 @@ import Testing
         #expect(result.address == ["city": "Tokyo", "count": "3", "active": "true"])
     }
 
+    @Test func leniencyPreservesLargeIntegerAddressValues() throws {
+        // A value exceeding Int32 must decode as an integer string, not fall
+        // through to Double (which would emit scientific notation / lose
+        // precision). Decoding uses Int64, so this holds on 32-bit platforms too.
+        let json = #"{"address": {"id": 9000000000}}"#
+        let data = Data(json.utf8)
+        let result = try JSONDecoder().decode(SearchResult.self, from: data)
+        #expect(result.address == ["id": "9000000000"])
+    }
+
     @Test func addressNilWhenAbsent() throws {
         let data = Data("{}".utf8)
         let result = try JSONDecoder().decode(SearchResult.self, from: data)

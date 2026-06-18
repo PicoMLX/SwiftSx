@@ -195,7 +195,10 @@ public struct SearchResult: Codable, Sendable, Equatable {
                     dict[key.stringValue] = value
                 } else if let value = try? nested.decode(Bool.self, forKey: key) {
                     dict[key.stringValue] = String(value)
-                } else if let value = try? nested.decode(Int.self, forKey: key) {
+                } else if let value = try? nested.decode(Int64.self, forKey: key) {
+                    // Int64 (not Int) so large 64-bit values decode losslessly on
+                    // 32-bit platforms instead of falling through to Double (which
+                    // would lose precision / emit scientific notation).
                     dict[key.stringValue] = String(value)
                 } else if let value = try? nested.decode(Double.self, forKey: key) {
                     dict[key.stringValue] = String(value)
