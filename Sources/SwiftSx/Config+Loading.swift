@@ -54,7 +54,7 @@ extension Config {
         // Reject invalid UTF-8 rather than silently substituting U+FFFD
         // (which `String(decoding:as:)` does) and then mis-parsing the TOML.
         guard let text = String(data: data, encoding: .utf8) else {
-            throw SxError(.usage, "config file at \(path) is not valid UTF-8")
+            throw SxError(.usage, "config file at \(path) is not valid UTF-8 — re-save it as UTF-8, or remove it to fall back to defaults")
         }
         return try Config.decode(fromTOML: text).normalized().applyingEnvironmentOverrides(env)
     }
