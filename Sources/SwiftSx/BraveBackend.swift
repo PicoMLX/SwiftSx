@@ -96,13 +96,16 @@ public struct BraveBackend: SearchBackend {
         case 200...299:
             do {
                 let decoded = try JSONDecoder().decode(BraveResponse.self, from: data)
-                // Merge results across the sections Brave returned (web, then
-                // news, then videos), preserving order, so category filters that
-                // surface news/video results are honored.
+                // Merge across the sections Brave returned (web, then news, then
+                // videos), preserving order. Cap to the requested count: Brave's
+                // `count` only limits the web section, so without this the merged
+                // list could exceed numResults (and --first / --count 1 could
+                // surface a web hit while ignoring a higher-ranked news/video
+                // item). Brave's `mixed` ranking is not yet reconstructed.
                 let items = (decoded.web?.results    ?? [])
                           + (decoded.news?.results   ?? [])
                           + (decoded.videos?.results ?? [])
-                return items.map { item in
+                return items.prefix(Self.resolvedCount(options.numResults)).map { item in
                     SearchResult(
                         title:   item.title       ?? "",
                         url:     item.url         ?? "",
@@ -141,6 +144,14 @@ public struct BraveBackend: SearchBackend {
 
     // MARK: - Request construction (internal for testability)
 
+    /// Resolve the requested result count: default 10 when `<= 0`, clamped to
+    /// Brave's documented maximum of 20. Used both to size the request and to
+    /// cap the merged (web + news + videos) result list.
+    static func resolvedCount(_ raw: Int) -> Int {
+        if raw <= 0 { return 10 }
+        return min(raw, 20)
+    }
+
     /// Build the `HTTPRequest` for the given options.
     ///
     /// This is factored out of `search(_:)` so tests can assert URL, method,
@@ -157,15 +168,7 @@ public struct BraveBackend: SearchBackend {
         }
 
         // count — clamp to 1...20; default to 10 when ≤ 0.
-        let rawCount = options.numResults
-        let count: Int
-        if rawCount <= 0 {
-            count = 10
-        } else if rawCount > 20 {
-            count = 20
-        } else {
-            count = rawCount
-        }
+        let count = Self.resolvedCount(options.numResults)
 
         // safesearch — map the documented levels.
         // Both "none" and "off" map to Brave's "off"; "strict" → "strict";

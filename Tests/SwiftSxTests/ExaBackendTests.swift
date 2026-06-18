@@ -145,13 +145,15 @@ private func mcpRPCEnvelope(resultJSON: Data) -> Data {
         #expect(dict["numResults"] as? Int == 10)
     }
 
-    @Test func bodyRequestsContentsText() throws {
-        // Exa returns no text/summary unless `contents` is requested, so the
-        // body must ask for page text or every snippet comes back empty.
+    @Test func bodyRequestsBoundedContentsText() throws {
+        // Exa returns no text/summary unless `contents` is requested, so the body
+        // must ask for page text — but bounded (maxCharacters), not unbounded
+        // `text: true`, so a search doesn't pull full page bodies.
         let (_, body) = try backend.makeAPIRequest(SearchOptions(query: "swift"))
         let dict = decodeExaBody(body)
         let contents = dict["contents"] as? [String: Any]
-        #expect(contents?["text"] as? Bool == true)
+        let text = contents?["text"] as? [String: Any]
+        #expect(text?["maxCharacters"] as? Int == 2000)
     }
 }
 

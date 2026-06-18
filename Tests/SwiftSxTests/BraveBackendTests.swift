@@ -475,6 +475,25 @@ struct BraveSearchTests {
         #expect(results.map(\.title) == ["W", "N", "V"])
     }
 
+    @Test func capsMergedSectionsToRequestedCount() async throws {
+        // Brave's `count` only limits the web section, so the merged
+        // web+news+videos list must be capped to the requested count. With
+        // --count 2 the result is [W, N], not all three sections.
+        let backend = makeBackend()
+        let body = Data("""
+        {
+          "web":    {"results": [{"title": "W", "url": "https://w.com", "description": "web"}]},
+          "news":   {"results": [{"title": "N", "url": "https://n.com", "description": "news"}]},
+          "videos": {"results": [{"title": "V", "url": "https://v.com", "description": "vid"}]}
+        }
+        """.utf8)
+        setHandler(status: 200, body: body)
+
+        let results = try await backend.search(SearchOptions(query: "test", numResults: 2))
+        #expect(results.count == 2)
+        #expect(results.map(\.title) == ["W", "N"])
+    }
+
     @Test func status201AlsoDecodes() async throws {
         let backend = makeBackend()
         setHandler(status: 201, body: braveJSON())
