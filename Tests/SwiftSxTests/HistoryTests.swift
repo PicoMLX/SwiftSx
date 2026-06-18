@@ -35,6 +35,14 @@ import Testing
         let path = History.historyFilePath(env: env, homeDirectory: "/home/u")
         #expect(path == "/home/u/.local/state/sx/history")
     }
+
+    @Test func ignoresTildeXDGStateHome() {
+        // A tilde path is not a literal absolute path, so it must be ignored —
+        // NSString.isAbsolutePath would wrongly accept it. Falls back to home.
+        let env = ["XDG_STATE_HOME": "~/state"]
+        let path = History.historyFilePath(env: env, homeDirectory: "/home/u")
+        #expect(path == "/home/u/.local/state/sx/history")
+    }
 }
 
 // MARK: - formatLine / parseLines round-trip

@@ -438,4 +438,13 @@ import Testing
         let path = Config.configFilePath(env: env, homeDirectory: "/home/u")
         #expect(path == "/home/u/.config/sx/config.toml")
     }
+
+    @Test func ignoresTildeXDGConfigHome() {
+        // A tilde path is not a literal absolute path (URL(fileURLWithPath:)
+        // would not expand it), so it must be ignored — NSString.isAbsolutePath
+        // would wrongly accept it. Falls back to home.
+        let env = ["XDG_CONFIG_HOME": "~/config"]
+        let path = Config.configFilePath(env: env, homeDirectory: "/home/u")
+        #expect(path == "/home/u/.config/sx/config.toml")
+    }
 }
