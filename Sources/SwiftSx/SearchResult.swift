@@ -45,7 +45,7 @@ public struct SearchResult: Codable, Sendable, Equatable {
     ///
     /// Non-string values within the object are silently skipped so that an
     /// unexpected numeric sub-field cannot break the decode.
-    public var address: [String: String]?
+    public var address: [String: JSONValue]?
 
     /// Longitude coordinate for map results.
     public var longitude: Double
@@ -87,7 +87,7 @@ public struct SearchResult: Codable, Sendable, Equatable {
         source: String = "",
         resolution: String = "",
         imgSrc: String = "",
-        address: [String: String]? = nil,
+        address: [String: JSONValue]? = nil,
         longitude: Double = 0,
         latitude: Double = 0,
         journal: String = "",
@@ -183,27 +183,16 @@ public struct SearchResult: Codable, Sendable, Equatable {
         size        = (try? c.decodeIfPresent(String.self,              forKey: .size))        ?? ""
         metadata    = (try? c.decodeIfPresent(String.self,              forKey: .metadata))    ?? ""
 
-        // address: decode a keyed container, preserving scalar sub-fields.
+        // address: decode a keyed container, preserving each scalar sub-field's
+        // JSON type as a JSONValue (upstream's `map[string]interface{}` keeps the
+        // original types). Nested objects/arrays fail to decode and are skipped;
+        // explicit nulls are skipped too, matching the prior behaviour.
         if c.contains(.address), let nested = try? c.nestedContainer(keyedBy: AnyCodingKey.self, forKey: .address) {
-            var dict = [String: String]()
+            var dict = [String: JSONValue]()
             for key in nested.allKeys {
-                // Preserve scalar sub-fields, stringifying non-string scalars so
-                // an unexpected numeric/boolean value isn't dropped. (Upstream's
-                // `map[string]interface{}` keeps original types; representing them
-                // as strings keeps SearchResult's `[String: String]` shape.)
-                if let value = try? nested.decode(String.self, forKey: key) {
+                if let value = try? nested.decode(JSONValue.self, forKey: key), value != .null {
                     dict[key.stringValue] = value
-                } else if let value = try? nested.decode(Bool.self, forKey: key) {
-                    dict[key.stringValue] = String(value)
-                } else if let value = try? nested.decode(Int64.self, forKey: key) {
-                    // Int64 (not Int) so large 64-bit values decode losslessly on
-                    // 32-bit platforms instead of falling through to Double (which
-                    // would lose precision / emit scientific notation).
-                    dict[key.stringValue] = String(value)
-                } else if let value = try? nested.decode(Double.self, forKey: key) {
-                    dict[key.stringValue] = String(value)
                 }
-                // Structured values (nested objects/arrays/null) are skipped.
             }
             address = dict
         } else {

@@ -196,7 +196,7 @@ extension ResultRenderer {
         }
 
         if let address = result.address {
-            dict["address"] = address
+            dict["address"] = address.mapValues(\.foundationValue)
         } else {
             dict["address"] = NSNull()
         }
@@ -213,7 +213,7 @@ extension ResultRenderer {
     /// - `Bool`   → drop when `false`
     /// - `nil`    → always drop
     /// - `[String]` → drop when empty
-    /// - `[String: String]` → drop when empty or nil
+    /// - `[String: JSONValue]` → drop when empty or nil
     static func cleanDict(for result: SearchResult) -> [String: Any] {
         var dict = [String: Any]()
 
@@ -253,7 +253,7 @@ extension ResultRenderer {
         setString("img_src",    result.imgSrc)
 
         if let address = result.address, !address.isEmpty {
-            dict["address"] = address
+            dict["address"] = address.mapValues(\.foundationValue)
         }
 
         setDouble("longitude", result.longitude)
