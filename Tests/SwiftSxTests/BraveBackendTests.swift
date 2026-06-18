@@ -538,6 +538,27 @@ struct BraveSearchTests {
         #expect(results.map(\.title) == ["W0", "N0"])
     }
 
+    @Test func mixedRankingHonorsTopBeforeMain() async throws {
+        let backend = makeBackend()
+        // `mixed.top` ranks above `mixed.main`: news[0] (in top) must precede
+        // web[0] (in main). The old main-only ordering would have appended the
+        // top item last instead, yielding [W0, N0].
+        let body = Data("""
+        {
+          "mixed": {
+            "top":  [{"type": "news", "index": 0}],
+            "main": [{"type": "web", "index": 0}]
+          },
+          "web":  {"results": [{"title": "W0", "url": "https://w0.com", "description": "web0"}]},
+          "news": {"results": [{"title": "N0", "url": "https://n0.com", "description": "news0"}]}
+        }
+        """.utf8)
+        setHandler(status: 200, body: body)
+
+        let results = try await backend.search(SearchOptions(query: "test"))
+        #expect(results.map(\.title) == ["N0", "W0"])
+    }
+
     @Test func status201AlsoDecodes() async throws {
         let backend = makeBackend()
         setHandler(status: 201, body: braveJSON())
