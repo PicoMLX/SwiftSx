@@ -34,9 +34,11 @@ extension Config {
             try await Shell.authorize(url)
         } catch {
             // Don't interpolate the raw sandbox error: it can embed the
-            // sandbox-resolved absolute path / internal layout. The logical
-            // config path is enough to be actionable.
-            throw SxError(.refused, "access to the config file at \(path) was refused by the sandbox")
+            // sandbox-resolved absolute path / internal layout. Use only the
+            // logical config path, and name the concrete next action (per
+            // AGENTS.md's LLM-friendly message rules) so the refusal stays
+            // actionable without leaking internals.
+            throw SxError(.refused, "access to the config file at \(path) was refused by the sandbox — grant the sandbox access to this path, or set XDG_CONFIG_HOME to an allowed absolute directory")
         }
 
         guard FileManager.default.fileExists(atPath: url.path) else {
