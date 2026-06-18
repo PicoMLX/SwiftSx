@@ -455,6 +455,8 @@ struct SearxngSearchTests {
         } catch let error as BackendError {
             #expect(error.code == .auth)
             #expect(error.message.contains("403"))
+            // A 403 most often means JSON output is disabled — say so.
+            #expect(error.message.contains("JSON"))
         }
     }
 

@@ -118,11 +118,19 @@ public struct SearxngBackend: SearchBackend {
                     message: "searxng returned a response that could not be parsed"
                 )
             }
-        case 401, 403:
+        case 401:
             throw BackendError(
                 backend: "searxng",
                 code: .auth,
-                message: "searxng rejected the request (HTTP \(status)) — check searxng_username/searxng_password"
+                message: "searxng rejected the request (HTTP 401) — check searxng_username/searxng_password"
+            )
+        case 403:
+            // A 403 from SearXNG most often means the instance has JSON output
+            // disabled rather than an auth problem, so lead with that fix.
+            throw BackendError(
+                backend: "searxng",
+                code: .auth,
+                message: "searxng refused the request (HTTP 403) — the instance likely has JSON output disabled; add \"json\" to the \"formats\" list in its settings.yml (or check searxng_username/searxng_password)"
             )
         case 429:
             throw BackendError(
