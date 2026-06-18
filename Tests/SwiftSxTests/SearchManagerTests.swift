@@ -59,6 +59,10 @@ private struct RawErrorBackend: SearchBackend {
     @Test func invalidResponseMapsToGeneral() {
         #expect(BackendErrorCode.invalidResponse.sxExitCode == .general)
     }
+
+    @Test func usageMapsToUsage() {
+        #expect(BackendErrorCode.usage.sxExitCode == .usage)
+    }
 }
 
 // MARK: - SearchManager.init

@@ -216,8 +216,8 @@ public struct SearchManager: Sendable {
     private func isFailClosed(_ error: any Error) -> Bool {
         guard let be = error as? BackendError else { return false }
         switch be.code {
-        case .unavailable, .auth, .network: return true
-        case .rateLimit, .invalidResponse:  return false
+        case .unavailable, .auth, .network:        return true
+        case .rateLimit, .invalidResponse, .usage: return false
         }
     }
 }

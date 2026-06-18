@@ -207,11 +207,12 @@ public struct TavilyBackend: SearchBackend {
                 )
             }
         case 400:
-            // A malformed request (bad query/options) is a usage problem, not a
-            // network/infra failure — don't escalate it to fail-closed (exit 7).
+            // A malformed request (bad query/options) is a usage problem: map to
+            // .usage (exit 2) so an agent fixes the command rather than retrying
+            // or escalating to fail-closed (exit 7).
             throw BackendError(
                 backend: "tavily",
-                code: .invalidResponse,
+                code: .usage,
                 message: "tavily rejected the request (HTTP 400) — check the query and options"
             )
         case 401, 403:
@@ -227,11 +228,12 @@ public struct TavilyBackend: SearchBackend {
                 message: "tavily is rate limiting (HTTP 429) — back off and retry"
             )
         case 432, 433:
-            // Tavily plan / credit limits — a usage condition, not a network
-            // failure. Map to the transient (exit 1) class, not fail-closed.
+            // Tavily plan / credit exhaustion — retrying the same command won't
+            // help until the plan or credits are fixed, so this is fail-closed
+            // (exit 7), not a transient rate-limit. Reuses .auth (→ exit 7).
             throw BackendError(
                 backend: "tavily",
-                code: .rateLimit,
+                code: .auth,
                 message: "tavily usage limit reached (HTTP \(status)) — check your Tavily plan or credits"
             )
         default:
