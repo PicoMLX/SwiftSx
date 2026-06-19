@@ -70,23 +70,32 @@ final class MockURLProtocol: URLProtocol {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        // Run the handler and deliver the response on a detached `Task`, off the
-        // URLSession work queue.
+        // Capture the handler and request *synchronously*, then deliver the
+        // response on a detached `Task`, off the URLSession work queue.
         //
-        // A handler may read the request body (e.g. to echo a JSON-RPC id). On
-        // swift-corelibs-foundation (Linux), reading `httpBodyStream` *synchronously*
-        // on the work queue that also feeds the stream can deadlock when the body
-        // isn't yet fully buffered — an intermittent hang. Dispatching matches the
-        // official MCP SDK's own `URLProtocol` mock, which is exercised on Linux CI.
+        // Capturing the handler here (rather than reading the process-global
+        // inside the Task) preserves the original timing: the handler in effect
+        // when the request starts is the one that serves it, even if another
+        // serialized suite swaps `handler` before the Task is scheduled.
+        //
+        // The dispatch itself matters because a handler may read the request body
+        // (e.g. to echo a JSON-RPC id). On swift-corelibs-foundation (Linux),
+        // reading `httpBodyStream` *synchronously* on the work queue that also
+        // feeds the stream can deadlock when the body isn't yet fully buffered —
+        // an intermittent hang. Reading the handler (a lock-guarded property) is
+        // safe on the queue; only the body read must move off it. Dispatching
+        // matches the official MCP SDK's own `URLProtocol` mock (run on Linux CI).
         //
         // `URLProtocol` isn't `Sendable` (and is *unavailably* `Sendable` on
         // Linux), so the instance is routed through an `UncheckedSendableBox` to
         // be captured by the `Task` under this package's Swift 6 mode.
+        let handler = MockURLProtocol.handler
+        let request = self.request
         let box = UncheckedSendableBox(self)
         Task {
             let `protocol` = box.value
             let client = `protocol`.client
-            guard let handler = MockURLProtocol.handler else {
+            guard let handler else {
                 client?.urlProtocol(
                     `protocol`,
                     didFailWithError: NSError(
@@ -98,7 +107,7 @@ final class MockURLProtocol: URLProtocol {
                 return
             }
             do {
-                let (response, data) = try handler(`protocol`.request)
+                let (response, data) = try handler(request)
                 client?.urlProtocol(`protocol`, didReceive: response, cacheStoragePolicy: .notAllowed)
                 client?.urlProtocol(`protocol`, didLoad: data)
                 client?.urlProtocolDidFinishLoading(`protocol`)
