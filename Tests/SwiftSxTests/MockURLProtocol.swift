@@ -22,6 +22,21 @@ final class TestLockedBox<T>: @unchecked Sendable {
     }
 }
 
+// MARK: - UncheckedSendableBox
+
+/// Wraps a value so it can cross an isolation boundary (e.g. be captured by a
+/// `Task`) regardless of whether the value's own type is `Sendable`.
+///
+/// `URLProtocol` is not `Sendable` on Apple platforms and carries an
+/// *unavailable* `Sendable` conformance on swift-corelibs-foundation (Linux),
+/// so a `URLProtocol` subclass instance can't be captured directly by the
+/// dispatching `Task` in ``MockURLProtocol/startLoading()``. Routing it through
+/// this box compiles on both — see that method.
+struct UncheckedSendableBox<Wrapped>: @unchecked Sendable {
+    let value: Wrapped
+    init(_ value: Wrapped) { self.value = value }
+}
+
 // MARK: - MockURLProtocol
 
 /// A `URLProtocol` subclass that intercepts every request and dispatches it
@@ -55,59 +70,54 @@ final class MockURLProtocol: URLProtocol {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        guard let handler = MockURLProtocol.handler else {
-            client?.urlProtocol(
-                self,
-                didFailWithError: NSError(
-                    domain: "MockURLProtocol",
-                    code: 1,
-                    userInfo: [NSLocalizedDescriptionKey: "no handler set"]
+        // Capture the handler and request *synchronously*, then deliver the
+        // response on a detached `Task`, off the URLSession work queue.
+        //
+        // Capturing the handler here (rather than reading the process-global
+        // inside the Task) preserves the original timing: the handler in effect
+        // when the request starts is the one that serves it, even if another
+        // serialized suite swaps `handler` before the Task is scheduled.
+        //
+        // The dispatch itself matters because a handler may read the request body
+        // (e.g. to echo a JSON-RPC id). On swift-corelibs-foundation (Linux),
+        // reading `httpBodyStream` *synchronously* on the work queue that also
+        // feeds the stream can deadlock when the body isn't yet fully buffered —
+        // an intermittent hang. Reading the handler (a lock-guarded property) is
+        // safe on the queue; only the body read must move off it. Dispatching
+        // matches the official MCP SDK's own `URLProtocol` mock (run on Linux CI).
+        //
+        // `URLProtocol` isn't `Sendable` (and is *unavailably* `Sendable` on
+        // Linux), so the instance is routed through an `UncheckedSendableBox` to
+        // be captured by the `Task` under this package's Swift 6 mode.
+        let handler = MockURLProtocol.handler
+        let request = self.request
+        let box = UncheckedSendableBox(self)
+        Task {
+            let `protocol` = box.value
+            let client = `protocol`.client
+            guard let handler else {
+                client?.urlProtocol(
+                    `protocol`,
+                    didFailWithError: NSError(
+                        domain: "MockURLProtocol",
+                        code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: "no handler set"]
+                    )
                 )
-            )
-            return
-        }
-        do {
-            let (response, data) = try handler(request)
-            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-            client?.urlProtocol(self, didLoad: data)
-            client?.urlProtocolDidFinishLoading(self)
-        } catch {
-            client?.urlProtocol(self, didFailWithError: error)
+                return
+            }
+            do {
+                let (response, data) = try handler(request)
+                client?.urlProtocol(`protocol`, didReceive: response, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocol(`protocol`, didLoad: data)
+                client?.urlProtocolDidFinishLoading(`protocol`)
+            } catch {
+                client?.urlProtocol(`protocol`, didFailWithError: error)
+            }
         }
     }
 
     override func stopLoading() {}
-
-        // MARK: - Sequential responses helper
-
-    /// Serve the given responses in order on successive requests; the last entry
-    /// repeats once the list is exhausted. Thread-safe (the index is lock-guarded),
-    /// so the `@Sendable` handler captures no mutable state.
-    ///
-    /// Each tuple supplies an HTTP `status` code and a raw `body` `Data` value.
-    /// The installed handler builds a plain `application/json` `HTTPURLResponse`
-    /// for every request, mirroring the convention used throughout the test suite.
-    static func setSequentialResponses(_ responses: [(status: Int, body: Data)]) {
-        struct State {
-            var responses: [(status: Int, body: Data)]
-            var index: Int = 0
-        }
-        let box = TestLockedBox(State(responses: responses))
-        handler = { request in
-            let (status, body) = box.withLock { state -> (Int, Data) in
-                let i = min(state.index, state.responses.count - 1)
-                state.index += 1
-                return (state.responses[i].status, state.responses[i].body)
-            }
-            let response = HTTPURLResponse(
-                url: request.url!,
-                statusCode: status,
-                httpVersion: "HTTP/1.1",
-                headerFields: ["Content-Type": "application/json"]
-            )!
-            return (response, body)
-        }
-    }
 
     // MARK: - Factory
 

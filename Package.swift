@@ -26,6 +26,10 @@ let package = Package(
         .package(url: "https://github.com/Cocoanetics/ShellKit", branch: "main"),
         .package(url: "https://github.com/dduan/TOMLDecoder", from: "0.3.0"),
         .package(url: "https://github.com/apple/swift-http-types", from: "1.3.0"),
+        // Official Model Context Protocol Swift SDK (Exa MCP mode). Pinned to the
+        // current minor: the SDK is pre-1.0 and its API still churns between
+        // minors, so .upToNextMinor avoids a surprise break on `swift update`.
+        .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", .upToNextMinor(from: "0.12.1")),
     ],
     targets: [
         .target(
@@ -35,6 +39,7 @@ let package = Package(
                 .product(name: "TOMLDecoder", package: "TOMLDecoder"),
                 .product(name: "HTTPTypes", package: "swift-http-types"),
                 .product(name: "HTTPTypesFoundation", package: "swift-http-types"),
+                .product(name: "MCP", package: "swift-sdk"),
             ]
         ),
         .target(

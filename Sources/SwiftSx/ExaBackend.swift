@@ -1,6 +1,8 @@
 import Foundation
 import HTTPTypes
 import HTTPTypesFoundation
+import MCP
+import ShellKit
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
@@ -68,23 +70,12 @@ private struct ExaMCPStructuredResult: Decodable {
 }
 
 /// The `structuredContent` object that may appear in an MCP tool result.
+///
+/// The MCP SDK surfaces `structuredContent` as an untyped ``MCP/Value``; we
+/// re-encode that value and decode it into this concrete shape so the existing
+/// result-mapping logic is preserved unchanged.
 private struct ExaMCPStructuredContent: Decodable {
     let results: [ExaMCPStructuredResult]?
-}
-
-/// A single item inside the MCP `content[]` array.
-private struct ExaMCPContentItem: Decodable {
-    let type: String?
-    let text: String?
-}
-
-/// Top-level MCP `tools/call` result payload.
-///
-/// Either `structuredContent` carries the results, or they are embedded as
-/// Markdown link text inside `content[]` items of `type == "text"`.
-private struct ExaMCPToolResult: Decodable {
-    let structuredContent: ExaMCPStructuredContent?
-    let content: [ExaMCPContentItem]?
 }
 
 // MARK: - ExaBackend
@@ -206,7 +197,7 @@ public struct ExaBackend: SearchBackend {
     private func searchAPI(_ options: SearchOptions) async throws -> [SearchResult] {
         let (request, bodyData) = try makeAPIRequest(options)
 
-        let (data, response): (Data, HTTPResponse)
+        let (data, response): (Data, HTTPTypes.HTTPResponse)
         do {
             (data, response) = try await transport.send(request, body: bodyData)
         } catch is CancellationError {
@@ -285,7 +276,7 @@ public struct ExaBackend: SearchBackend {
     ///
     /// - Throws: `BackendError(.network, …)` when the endpoint URL cannot be
     ///   built or the body cannot be encoded.
-    func makeAPIRequest(_ options: SearchOptions) throws -> (HTTPRequest, Data) {
+    func makeAPIRequest(_ options: SearchOptions) throws -> (HTTPTypes.HTTPRequest, Data) {
         guard let url = URL(string: "https://api.exa.ai/search") else {
             throw BackendError(
                 backend: "exa",
@@ -327,7 +318,7 @@ public struct ExaBackend: SearchBackend {
             )
         }
 
-        var request = HTTPRequest(method: .post, url: url)
+        var request = HTTPTypes.HTTPRequest(method: .post, url: url)
         request.headerFields[.contentType] = "application/json"
         request.headerFields[.accept] = "application/json"
         request.headerFields[.xApiKey] = apiKey
@@ -337,14 +328,38 @@ public struct ExaBackend: SearchBackend {
 
     // MARK: - MCP mode
 
-    /// Perform a search via the MCP JSON-RPC server.
+    /// Perform a search via the Exa MCP server using the official MCP Swift SDK.
+    ///
+    /// The SDK's ``MCP/Client`` + ``MCP/HTTPClientTransport`` drive the JSON-RPC
+    /// lifecycle: `connect(transport:)` performs `initialize` and emits
+    /// `notifications/initialized`, then ``MCP/Client/callTool(name:arguments:meta:)``
+    /// issues `tools/call`. We translate the SDK's result and error surface back
+    /// onto SwiftSx's ``SearchResult`` / ``BackendError`` contracts.
+    ///
+    /// `streaming: false` selects a plain request/response POST per call (no SSE),
+    /// which is both simpler to reason about and trivial to mock in tests.
     private func searchMCP(_ options: SearchOptions) async throws -> [SearchResult] {
-        let client = MCPHTTPClient(urlString: mcpURL, transport: transport)
+        guard let url = URL(string: mcpURL) else {
+            throw BackendError(
+                backend: "exa-mcp",
+                code: .network,
+                message: "exa MCP request failed: invalid MCP URL '\(mcpURL)'"
+            )
+        }
 
-        // Best-effort handshake; errors are intentionally swallowed.
-        await client.initialize()
+        // API mode gates every request through the ShellKit sandbox (via
+        // `HTTPTransport.send`). The SDK transport owns its own URLSession and
+        // bypasses that gate, so authorize the endpoint here to preserve the
+        // fail-closed sandbox semantics (a denial surfaces as `.refused`, exit 3).
+        do {
+            try await Shell.authorize(url)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw SxError(.refused, "request to \(url.host ?? url.absoluteString) was refused by the sandbox: \(error)")
+        }
 
-        // Resolve numResults identically to API mode.
+        // Resolve numResults identically to API mode (options > backend default > 10).
         let n: Int
         if options.numResults > 0 {
             n = options.numResults
@@ -354,26 +369,97 @@ public struct ExaBackend: SearchBackend {
             n = 10
         }
 
-        let args = MCPToolCallArguments(query: options.query, numResults: n)
-        let toolResult: ExaMCPToolResult
-        do {
-            toolResult = try await client.callTool(name: mcpTool, arguments: args, responseType: ExaMCPToolResult.self)
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch let sx as SxError {
-            throw sx
-        } catch let be as BackendError {
-            throw be
-        } catch {
-            throw BackendError(
-                backend: "exa",
-                code: .network,
-                message: "exa MCP request failed: \(error)"
-            )
+        // Tool arguments. Exa's tool accepts both `numResults` (camelCase) and
+        // `num_results` (snake_case); send both for compatibility. Forward `site`
+        // as an `includeDomains` allow-list, mirroring API mode (previously MCP
+        // mode dropped the site restriction).
+        var arguments: [String: Value] = [
+            "query":       .string(options.query),
+            "numResults":  .int(n),
+            "num_results": .int(n),
+        ]
+        if !options.site.isEmpty {
+            arguments["includeDomains"] = .array([.string(options.site)])
         }
 
+        // Reuse the injected transport's URLSession configuration so that the
+        // request timeout (production) and `MockURLProtocol` (tests) both flow
+        // into the SDK transport's own session.
+        //
+        // We keep the SDK's spec-compliant `Accept: application/json,
+        // text/event-stream` (a Streamable HTTP client must accept both). On
+        // Apple platforms the SDK parses an SSE-framed response; on Linux it
+        // does not (an upstream swift-sdk limitation), so a Linux client against
+        // an SSE-only endpoint gets no results — bounded by the watchdog below as
+        // a clean timeout rather than a hang. We do not advertise a non-compliant
+        // JSON-only Accept to work around it: that can make strict servers reject
+        // `initialize`/`tools/call` with 406/400.
+        let configuration = transport.session.configuration
+        let mcpTransport = HTTPClientTransport(
+            endpoint: url,
+            configuration: configuration,
+            streaming: false
+        )
+        let client = Client(name: "sx", version: SxVersion.current)
+
+        // Bound the whole exchange. A misbehaving MCP server can return a
+        // JSON-RPC error whose `id` is `null` (valid JSON-RPC, e.g. plan/auth
+        // guidance from Exa's hosted server); the SDK cannot match that to the
+        // pending request, so the await would never resume. On timeout,
+        // `disconnect()` fails every pending request — unblocking that await —
+        // and we surface a network error.
+        //
+        // The exchange is three sequential HTTP round trips (initialize, the
+        // initialized notification, tools/call), each already bounded by the
+        // URLSession per-request timeout. Budget the watchdog for all three so a
+        // slow-but-working server isn't cut off at the per-request budget; it
+        // exists only to bound a hang from an unmatched response.
+        let requestTimeout = configuration.timeoutIntervalForRequest
+        let perRequest = (requestTimeout.isFinite && requestTimeout > 0) ? requestTimeout : 60
+        let ceilingSeconds = perRequest * 3
+        let tool = mcpTool
+        let args = arguments
+
+        let result: CallTool.Result
+        do {
+            result = try await withThrowingTaskGroup(of: CallTool.Result.self) { group in
+                group.addTask {
+                    try await client.connect(transport: mcpTransport)
+                    // The RequestContext overload of `callTool`: unlike the tuple
+                    // overload it preserves `structuredContent`, Exa's primary path.
+                    let context: RequestContext<CallTool.Result> =
+                        try await client.callTool(name: tool, arguments: args)
+                    return try await context.value
+                }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: UInt64(ceilingSeconds * 1_000_000_000))
+                    // Fail any never-matched pending request so the operation
+                    // task above unblocks and the group can tear down.
+                    await client.disconnect()
+                    throw BackendError(
+                        backend: "exa-mcp",
+                        code: .network,
+                        message: "exa MCP request timed out after \(Int(ceilingSeconds))s without a matching response"
+                    )
+                }
+                defer { group.cancelAll() }
+                guard let first = try await group.next() else {
+                    throw BackendError(
+                        backend: "exa-mcp",
+                        code: .invalidResponse,
+                        message: "exa MCP returned a response that could not be parsed"
+                    )
+                }
+                return first
+            }
+        } catch {
+            await client.disconnect()
+            throw mapMCPError(error)
+        }
+        await client.disconnect()
+
         // Parse the tool result — try structuredContent first, then markdown links.
-        let results = parseMCPResult(toolResult)
+        let results = try parseMCPResult(structuredContent: result.structuredContent, content: result.content)
 
         if options.numResults > 0, results.count > options.numResults {
             return Array(results.prefix(options.numResults))
@@ -381,41 +467,148 @@ public struct ExaBackend: SearchBackend {
         return results
     }
 
+    // MARK: - MCP error mapping
+
+    /// Map an error thrown by the MCP SDK onto SwiftSx's error contract.
+    ///
+    /// Cancellation, sandbox refusals (``SxError``), and already-classified
+    /// ``BackendError`` values pass through unchanged; ``MCP/MCPError`` is
+    /// classified by ``mapMCPProtocolError(_:)``; transport-level `URLError`s are
+    /// network failures; anything else (notably the SDK's internal type-mismatch
+    /// error for a 2xx response whose result did not match the `tools/call`
+    /// shape) is treated as an unparseable response.
+    private func mapMCPError(_ error: Error) -> Error {
+        switch error {
+        case is CancellationError:
+            return error          // propagate the original; preserves any context
+        case let sx as SxError:
+            return sx
+        case let be as BackendError:
+            return be
+        case let mcp as MCPError:
+            return mapMCPProtocolError(mcp)
+        case let urlError as URLError:
+            return BackendError(
+                backend: "exa-mcp",
+                code: .network,
+                message: "exa MCP request failed: \(urlError.localizedDescription)"
+            )
+        default:
+            return BackendError(
+                backend: "exa-mcp",
+                code: .invalidResponse,
+                message: "exa MCP returned a response that could not be parsed"
+            )
+        }
+    }
+
+    /// Classify an ``MCP/MCPError`` into a ``BackendError``.
+    ///
+    /// The SDK's HTTP transport collapses every non-2xx status into
+    /// `MCPError.internalError(detail)` with a fixed detail string (see
+    /// `HTTPClientTransport.processHTTPResponse` / `mapAuthenticationChallengeError`):
+    /// 401 → "Authentication required", 403 → "Access forbidden",
+    /// 429 → "Too many requests", 5xx → "Server error: <code>", etc. There is no
+    /// structured status code to read, so the class of failure is recovered from
+    /// that detail string. The SDK is pinned `.upToNextMinor` so these strings
+    /// cannot shift without an opt-in version bump.
+    private func mapMCPProtocolError(_ error: MCPError) -> BackendError {
+        switch error {
+        case .internalError(let detail):
+            let d = detail ?? ""
+            if d.contains("Authentication required") || d.contains("Access forbidden") {
+                return BackendError(
+                    backend: "exa-mcp",
+                    code: .auth,
+                    message: "exa MCP server rejected the request (\(d)) — check the MCP URL or its credentials (engines_exa.mcp_url)"
+                )
+            }
+            if d.contains("Too many requests") {
+                return BackendError(
+                    backend: "exa-mcp",
+                    code: .rateLimit,
+                    message: "exa MCP server is rate limiting (too many requests) — back off and retry"
+                )
+            }
+            return BackendError(
+                backend: "exa-mcp",
+                code: .network,
+                message: "exa MCP server returned an error: \(d)"
+            )
+        case .parseError:
+            return BackendError(
+                backend: "exa-mcp",
+                code: .invalidResponse,
+                message: "exa MCP returned a response that could not be parsed"
+            )
+        default:
+            return BackendError(
+                backend: "exa-mcp",
+                code: .network,
+                message: "exa MCP request failed: \(error.errorDescription ?? "\(error)")"
+            )
+        }
+    }
+
     // MARK: - MCP result parsing
 
-    /// Parse a decoded `ExaMCPToolResult` into ``SearchResult`` values.
+    /// Parse an MCP `tools/call` result into ``SearchResult`` values.
     ///
     /// Two strategies are tried in order:
     /// 1. `structuredContent.results[]` — preferred when present; each item's
     ///    content is the first non-empty of `text`, `content`, `summary`, `snippet`.
-    /// 2. `content[]` items of `type == "text"` — scan the concatenated text for
-    ///    Markdown links `[title](url)` via `NSRegularExpression`.
-    private func parseMCPResult(_ toolResult: ExaMCPToolResult) -> [SearchResult] {
-        if let structured = toolResult.structuredContent,
-           let items = structured.results,
-           !items.isEmpty {
-            return items.map { item in
-                let resolvedContent = firstNonEmpty(item.text, item.content, item.summary, item.snippet)
-                return SearchResult(
-                    title:   item.title ?? "",
-                    url:     item.url   ?? "",
-                    content: resolvedContent,
-                    engine:  "exa",
-                    engines: ["exa"]
+    ///    The SDK exposes `structuredContent` as an untyped ``MCP/Value``, so it is
+    ///    re-encoded and decoded into ``ExaMCPStructuredContent``.
+    /// 2. `content[]` text items — scan the concatenated text for Markdown links
+    ///    `[title](url)` via `NSRegularExpression`.
+    ///
+    /// - Throws: `BackendError(.invalidResponse, …)` when `structuredContent` is
+    ///   present but does not decode into the expected shape. Such a payload is
+    ///   malformed (the removed hand-rolled client also failed to decode it), and
+    ///   must surface as an error rather than silently falling through to the
+    ///   Markdown path and "succeeding" with no results — structured-only
+    ///   responses carry an empty `content`, so the fall-through would hide it.
+    private func parseMCPResult(structuredContent: Value?, content: [Tool.Content]) throws -> [SearchResult] {
+        if let structuredContent {
+            guard let structured = decodeStructuredContent(structuredContent) else {
+                throw BackendError(
+                    backend: "exa-mcp",
+                    code: .invalidResponse,
+                    message: "exa MCP returned a structuredContent payload that could not be parsed"
                 )
             }
+            if let items = structured.results, !items.isEmpty {
+                return items.map { item in
+                    let resolvedContent = firstNonEmpty(item.text, item.content, item.summary, item.snippet)
+                    return SearchResult(
+                        title:   item.title ?? "",
+                        url:     item.url   ?? "",
+                        content: resolvedContent,
+                        engine:  "exa",
+                        engines: ["exa"]
+                    )
+                }
+            }
+            // Decoded, but no usable results — fall through to the Markdown path.
         }
 
-        // Fall back: scan content[] text items for Markdown links.
-        if let contentItems = toolResult.content {
-            let combinedText = contentItems
-                .filter { $0.type == "text" }
-                .compactMap { $0.text }
-                .joined(separator: "\n")
-            return extractMarkdownLinks(from: combinedText)
-        }
+        // Fall back: scan text content items for Markdown links.
+        let combinedText = content
+            .compactMap { item -> String? in
+                if case .text(let text, _, _) = item { return text }
+                return nil
+            }
+            .joined(separator: "\n")
+        return extractMarkdownLinks(from: combinedText)
+    }
 
-        return []
+    /// Re-encode an MCP ``MCP/Value`` and decode it into ``ExaMCPStructuredContent``.
+    ///
+    /// `Value` is `Codable`, so a round-trip through JSON recovers the concrete
+    /// shape without hand-walking the enum.
+    private func decodeStructuredContent(_ value: Value) -> ExaMCPStructuredContent? {
+        guard let data = try? JSONEncoder().encode(value) else { return nil }
+        return try? JSONDecoder().decode(ExaMCPStructuredContent.self, from: data)
     }
 
     /// Return the first argument that is non-nil and non-empty, or `""`.
