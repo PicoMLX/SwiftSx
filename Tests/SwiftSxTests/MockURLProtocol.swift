@@ -22,6 +22,21 @@ final class TestLockedBox<T>: @unchecked Sendable {
     }
 }
 
+// MARK: - UncheckedSendableBox
+
+/// Wraps a value so it can cross an isolation boundary (e.g. be captured by a
+/// `Task`) regardless of whether the value's own type is `Sendable`.
+///
+/// `URLProtocol` is not `Sendable` on Apple platforms and carries an
+/// *unavailable* `Sendable` conformance on swift-corelibs-foundation (Linux),
+/// so a `URLProtocol` subclass instance can't be captured directly by the
+/// dispatching `Task` in ``MockURLProtocol/startLoading()``. Routing it through
+/// this box compiles on both — see that method.
+struct UncheckedSendableBox<Wrapped>: @unchecked Sendable {
+    let value: Wrapped
+    init(_ value: Wrapped) { self.value = value }
+}
+
 // MARK: - MockURLProtocol
 
 /// A `URLProtocol` subclass that intercepts every request and dispatches it
@@ -38,10 +53,7 @@ final class TestLockedBox<T>: @unchecked Sendable {
 ///
 /// **Important**: `MockURLProtocol.handler` is process-global. Any test suite
 /// that mutates it must be annotated `@Suite(.serialized)` to prevent races.
-///
-/// `@unchecked Sendable` so the protocol instance can be captured by the
-/// dispatching `Task` in ``startLoading()`` — see that method.
-final class MockURLProtocol: URLProtocol, @unchecked Sendable {
+final class MockURLProtocol: URLProtocol {
     typealias Handler = @Sendable (URLRequest) throws -> (HTTPURLResponse, Data)
 
     private static let state = TestLockedBox<Handler?>(nil)
@@ -66,10 +78,17 @@ final class MockURLProtocol: URLProtocol, @unchecked Sendable {
         // on the work queue that also feeds the stream can deadlock when the body
         // isn't yet fully buffered — an intermittent hang. Dispatching matches the
         // official MCP SDK's own `URLProtocol` mock, which is exercised on Linux CI.
+        //
+        // `URLProtocol` isn't `Sendable` (and is *unavailably* `Sendable` on
+        // Linux), so the instance is routed through an `UncheckedSendableBox` to
+        // be captured by the `Task` under this package's Swift 6 mode.
+        let box = UncheckedSendableBox(self)
         Task {
+            let `protocol` = box.value
+            let client = `protocol`.client
             guard let handler = MockURLProtocol.handler else {
                 client?.urlProtocol(
-                    self,
+                    `protocol`,
                     didFailWithError: NSError(
                         domain: "MockURLProtocol",
                         code: 1,
@@ -79,12 +98,12 @@ final class MockURLProtocol: URLProtocol, @unchecked Sendable {
                 return
             }
             do {
-                let (response, data) = try handler(request)
-                client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-                client?.urlProtocol(self, didLoad: data)
-                client?.urlProtocolDidFinishLoading(self)
+                let (response, data) = try handler(`protocol`.request)
+                client?.urlProtocol(`protocol`, didReceive: response, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocol(`protocol`, didLoad: data)
+                client?.urlProtocolDidFinishLoading(`protocol`)
             } catch {
-                client?.urlProtocol(self, didFailWithError: error)
+                client?.urlProtocol(`protocol`, didFailWithError: error)
             }
         }
     }
