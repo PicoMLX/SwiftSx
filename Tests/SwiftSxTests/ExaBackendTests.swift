@@ -657,6 +657,47 @@ struct ExaMCPSearchTests {
         #expect(args?["includeDomains"] == nil)
     }
 
+    // MARK: Accept header forced to JSON (avoids SSE on Linux)
+
+    @Test func mcpForcesJSONOnlyAcceptHeader() async throws {
+        // streaming:false → force `Accept: application/json` so the server
+        // returns JSON rather than an SSE stream the SDK's Linux transport
+        // can't parse. Capture the tools/call request's Accept header.
+        let backend = makeBackend()
+        let accept = TestLockedBox<String?>(nil)
+        MockURLProtocol.handler = { request in
+            let obj = (try? JSONSerialization.jsonObject(with: request.sx_bodyData)) as? [String: Any]
+            func respond(_ status: Int, _ data: Data) -> (HTTPURLResponse, Data) {
+                let response = HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: status,
+                    httpVersion: "HTTP/1.1",
+                    headerFields: ["Content-Type": "application/json"]
+                )!
+                return (response, data)
+            }
+            switch obj?["method"] as? String {
+            case "initialize":
+                return respond(200, mcpResultEnvelope(id: obj?["id"], result: mcpInitializeResultJSON))
+            case "notifications/initialized":
+                return respond(202, Data())
+            case "tools/call":
+                accept.withLock { $0 = request.value(forHTTPHeaderField: "Accept") }
+                return respond(200, mcpResultEnvelope(id: obj?["id"], result: exaMCPStructuredJSON(results: [
+                    ["title": "x", "url": "https://x.com"],
+                ])))
+            default:
+                return respond(200, Data())
+            }
+        }
+
+        _ = try await backend.search(SearchOptions(query: "test"))
+
+        let header = accept.withLock { $0 }
+        #expect(header?.contains("application/json") == true)
+        #expect(header?.contains("text/event-stream") != true)
+    }
+
     // MARK: unparseable result
 
     @Test func mcpUnparseableResultThrowsInvalidResponse() async throws {

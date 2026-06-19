@@ -389,7 +389,20 @@ public struct ExaBackend: SearchBackend {
         let mcpTransport = HTTPClientTransport(
             endpoint: url,
             configuration: configuration,
-            streaming: false
+            streaming: false,
+            // We want a single JSON response, but the SDK still advertises
+            // `Accept: application/json, text/event-stream`. If the server then
+            // replies with an SSE-framed body, the SDK's Linux transport yields
+            // the raw `data:` frames unparsed (SSE isn't supported there), the
+            // message loop never matches the response, and the call times out.
+            // Force a JSON-only Accept so a compliant server returns
+            // `application/json`, which both platforms handle. (`setValue`
+            // replaces the SDK's default Accept rather than appending.)
+            requestModifier: { request in
+                var request = request
+                request.setValue("application/json", forHTTPHeaderField: "Accept")
+                return request
+            }
         )
         let client = Client(name: "sx", version: SxVersion.current)
 
