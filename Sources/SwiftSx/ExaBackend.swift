@@ -385,36 +385,38 @@ public struct ExaBackend: SearchBackend {
         // Reuse the injected transport's URLSession configuration so that the
         // request timeout (production) and `MockURLProtocol` (tests) both flow
         // into the SDK transport's own session.
+        //
+        // We keep the SDK's spec-compliant `Accept: application/json,
+        // text/event-stream` (a Streamable HTTP client must accept both). On
+        // Apple platforms the SDK parses an SSE-framed response; on Linux it
+        // does not (an upstream swift-sdk limitation), so a Linux client against
+        // an SSE-only endpoint gets no results — bounded by the watchdog below as
+        // a clean timeout rather than a hang. We do not advertise a non-compliant
+        // JSON-only Accept to work around it: that can make strict servers reject
+        // `initialize`/`tools/call` with 406/400.
         let configuration = transport.session.configuration
         let mcpTransport = HTTPClientTransport(
             endpoint: url,
             configuration: configuration,
-            streaming: false,
-            // We want a single JSON response, but the SDK still advertises
-            // `Accept: application/json, text/event-stream`. If the server then
-            // replies with an SSE-framed body, the SDK's Linux transport yields
-            // the raw `data:` frames unparsed (SSE isn't supported there), the
-            // message loop never matches the response, and the call times out.
-            // Force a JSON-only Accept so a compliant server returns
-            // `application/json`, which both platforms handle. (`setValue`
-            // replaces the SDK's default Accept rather than appending.)
-            requestModifier: { request in
-                var request = request
-                request.setValue("application/json", forHTTPHeaderField: "Accept")
-                return request
-            }
+            streaming: false
         )
         let client = Client(name: "sx", version: SxVersion.current)
 
         // Bound the whole exchange. A misbehaving MCP server can return a
         // JSON-RPC error whose `id` is `null` (valid JSON-RPC, e.g. plan/auth
         // guidance from Exa's hosted server); the SDK cannot match that to the
-        // pending `tools/call` request, so `context.value` would await forever.
-        // On timeout, `disconnect()` fails every pending request — unblocking
-        // that await — and we surface a network error. The ceiling follows the
-        // configured per-request timeout (production), defaulting to 60s.
+        // pending request, so the await would never resume. On timeout,
+        // `disconnect()` fails every pending request — unblocking that await —
+        // and we surface a network error.
+        //
+        // The exchange is three sequential HTTP round trips (initialize, the
+        // initialized notification, tools/call), each already bounded by the
+        // URLSession per-request timeout. Budget the watchdog for all three so a
+        // slow-but-working server isn't cut off at the per-request budget; it
+        // exists only to bound a hang from an unmatched response.
         let requestTimeout = configuration.timeoutIntervalForRequest
-        let ceilingSeconds = (requestTimeout.isFinite && requestTimeout > 0) ? requestTimeout : 60
+        let perRequest = (requestTimeout.isFinite && requestTimeout > 0) ? requestTimeout : 60
+        let ceilingSeconds = perRequest * 3
         let tool = mcpTool
         let args = arguments
 
