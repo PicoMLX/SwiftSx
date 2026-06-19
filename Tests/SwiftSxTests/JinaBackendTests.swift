@@ -187,7 +187,7 @@ private func jinaJSON(items: [[String: String]] = []) -> Data {
 
 // MARK: - search: happy path + status codes
 
-@Suite(.serialized)
+@Suite(.serialized, .mockURLProtocolSerialized)
 struct JinaSearchTests {
 
     private func makeBackend(

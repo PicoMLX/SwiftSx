@@ -387,7 +387,7 @@ private func braveJSON(results: [[String: String]] = []) -> Data {
 
 // MARK: - search: happy path + status codes
 
-@Suite(.serialized)
+@Suite(.serialized, .mockURLProtocolSerialized)
 struct BraveSearchTests {
 
     private func makeBackend(apiKey: String = "test-key") -> BraveBackend {

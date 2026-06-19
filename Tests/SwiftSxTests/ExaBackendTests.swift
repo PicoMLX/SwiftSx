@@ -320,7 +320,7 @@ private func mcpHandler(
 
 // MARK: - search (API mode): happy path + status codes
 
-@Suite(.serialized)
+@Suite(.serialized, .mockURLProtocolSerialized)
 struct ExaAPISearchTests {
 
     private func makeBackend(apiKey: String = "test-key") -> ExaBackend {
@@ -529,7 +529,7 @@ struct ExaAPISearchTests {
 
 // MARK: - search (MCP mode): structured content and markdown links
 
-@Suite(.serialized)
+@Suite(.serialized, .mockURLProtocolSerialized)
 struct ExaMCPSearchTests {
 
     private func makeBackend(mcpURL: String = "https://mcp.example.com") -> ExaBackend {
@@ -805,7 +805,7 @@ struct ExaMCPSearchTests {
 
 // MARK: - search (auto mode): API-to-MCP fallback
 
-@Suite(.serialized)
+@Suite(.serialized, .mockURLProtocolSerialized)
 struct ExaAutoModeTests {
 
     @Test func autoModeUsesAPIWhenKeyPresent() async throws {
