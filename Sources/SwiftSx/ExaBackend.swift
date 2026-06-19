@@ -385,22 +385,58 @@ public struct ExaBackend: SearchBackend {
         // Reuse the injected transport's URLSession configuration so that the
         // request timeout (production) and `MockURLProtocol` (tests) both flow
         // into the SDK transport's own session.
+        let configuration = transport.session.configuration
         let mcpTransport = HTTPClientTransport(
             endpoint: url,
-            configuration: transport.session.configuration,
+            configuration: configuration,
             streaming: false
         )
         let client = Client(name: "sx", version: SxVersion.current)
 
+        // Bound the whole exchange. A misbehaving MCP server can return a
+        // JSON-RPC error whose `id` is `null` (valid JSON-RPC, e.g. plan/auth
+        // guidance from Exa's hosted server); the SDK cannot match that to the
+        // pending `tools/call` request, so `context.value` would await forever.
+        // On timeout, `disconnect()` fails every pending request — unblocking
+        // that await — and we surface a network error. The ceiling follows the
+        // configured per-request timeout (production), defaulting to 60s.
+        let requestTimeout = configuration.timeoutIntervalForRequest
+        let ceilingSeconds = (requestTimeout.isFinite && requestTimeout > 0) ? requestTimeout : 60
+        let tool = mcpTool
+        let args = arguments
+
         let result: CallTool.Result
         do {
-            try await client.connect(transport: mcpTransport)
-            // Use the RequestContext overload of `callTool`: unlike the tuple
-            // overload it preserves `structuredContent`, which is Exa's primary
-            // result path.
-            let context: RequestContext<CallTool.Result> =
-                try await client.callTool(name: mcpTool, arguments: arguments)
-            result = try await context.value
+            result = try await withThrowingTaskGroup(of: CallTool.Result.self) { group in
+                group.addTask {
+                    try await client.connect(transport: mcpTransport)
+                    // The RequestContext overload of `callTool`: unlike the tuple
+                    // overload it preserves `structuredContent`, Exa's primary path.
+                    let context: RequestContext<CallTool.Result> =
+                        try await client.callTool(name: tool, arguments: args)
+                    return try await context.value
+                }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: UInt64(ceilingSeconds * 1_000_000_000))
+                    // Fail any never-matched pending request so the operation
+                    // task above unblocks and the group can tear down.
+                    await client.disconnect()
+                    throw BackendError(
+                        backend: "exa-mcp",
+                        code: .network,
+                        message: "exa MCP request timed out after \(Int(ceilingSeconds))s without a matching response"
+                    )
+                }
+                defer { group.cancelAll() }
+                guard let first = try await group.next() else {
+                    throw BackendError(
+                        backend: "exa-mcp",
+                        code: .invalidResponse,
+                        message: "exa MCP returned a response that could not be parsed"
+                    )
+                }
+                return first
+            }
         } catch {
             await client.disconnect()
             throw mapMCPError(error)
@@ -429,7 +465,7 @@ public struct ExaBackend: SearchBackend {
     private func mapMCPError(_ error: Error) -> Error {
         switch error {
         case is CancellationError:
-            return CancellationError()
+            return error          // propagate the original; preserves any context
         case let sx as SxError:
             return sx
         case let be as BackendError:

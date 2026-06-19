@@ -673,6 +673,63 @@ struct ExaMCPSearchTests {
         }
     }
 
+    // MARK: unmatched JSON-RPC error (id: null) must time out, not hang
+    //
+    // A JSON-RPC error response with `id: null` (valid JSON-RPC — e.g. plan/auth
+    // guidance) cannot be matched to the pending `tools/call` request, so the
+    // SDK never resumes it. The request ceiling must surface a network error
+    // instead of awaiting forever. `.timeLimit` is a backstop: if the ceiling
+    // ever regresses, the test fails fast rather than hanging CI.
+
+    @Test(.timeLimit(.minutes(1)))
+    func mcpUnmatchedErrorResponseTimesOutInsteadOfHanging() async throws {
+        // A 1s per-request timeout makes the operation ceiling ~1s.
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockURLProtocol.self]
+        config.timeoutIntervalForRequest = 1
+        let transport = HTTPTransport(session: URLSession(configuration: config))
+        let backend = ExaBackend(
+            mode:       "mcp",
+            apiKey:     "",
+            mcpURL:     "https://mcp.example.com",
+            mcpTool:    "exa-web-search",
+            numResults: 10,
+            transport:  transport
+        )
+
+        // initialize succeeds (id echoed); tools/call returns a JSON-RPC error
+        // whose id is null — unmatchable to the pending request.
+        MockURLProtocol.handler = { request in
+            let obj = (try? JSONSerialization.jsonObject(with: request.sx_bodyData)) as? [String: Any]
+            func respond(_ status: Int, _ data: Data) -> (HTTPURLResponse, Data) {
+                let response = HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: status,
+                    httpVersion: "HTTP/1.1",
+                    headerFields: ["Content-Type": "application/json"]
+                )!
+                return (response, data)
+            }
+            switch obj?["method"] as? String {
+            case "initialize":
+                return respond(200, mcpResultEnvelope(id: obj?["id"], result: mcpInitializeResultJSON))
+            case "notifications/initialized":
+                return respond(202, Data())
+            case "tools/call":
+                return respond(200, Data(#"{"jsonrpc":"2.0","error":{"code":-32000,"message":"plan limit"},"id":null}"#.utf8))
+            default:
+                return respond(200, Data())
+            }
+        }
+
+        do {
+            _ = try await backend.search(SearchOptions(query: "test"))
+            Issue.record("Expected a BackendError (timeout), not a hang or success")
+        } catch let error as BackendError {
+            #expect(error.code == .network)
+        }
+    }
+
     // MARK: MCP server status → error code
     //
     // `initialize` always succeeds; the status under test is returned on the

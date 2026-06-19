@@ -38,7 +38,10 @@ final class TestLockedBox<T>: @unchecked Sendable {
 ///
 /// **Important**: `MockURLProtocol.handler` is process-global. Any test suite
 /// that mutates it must be annotated `@Suite(.serialized)` to prevent races.
-final class MockURLProtocol: URLProtocol {
+///
+/// `@unchecked Sendable` so the protocol instance can be captured by the
+/// dispatching `Task` in ``startLoading()`` — see that method.
+final class MockURLProtocol: URLProtocol, @unchecked Sendable {
     typealias Handler = @Sendable (URLRequest) throws -> (HTTPURLResponse, Data)
 
     private static let state = TestLockedBox<Handler?>(nil)
@@ -55,24 +58,34 @@ final class MockURLProtocol: URLProtocol {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        guard let handler = MockURLProtocol.handler else {
-            client?.urlProtocol(
-                self,
-                didFailWithError: NSError(
-                    domain: "MockURLProtocol",
-                    code: 1,
-                    userInfo: [NSLocalizedDescriptionKey: "no handler set"]
+        // Run the handler and deliver the response on a detached `Task`, off the
+        // URLSession work queue.
+        //
+        // A handler may read the request body (e.g. to echo a JSON-RPC id). On
+        // swift-corelibs-foundation (Linux), reading `httpBodyStream` *synchronously*
+        // on the work queue that also feeds the stream can deadlock when the body
+        // isn't yet fully buffered — an intermittent hang. Dispatching matches the
+        // official MCP SDK's own `URLProtocol` mock, which is exercised on Linux CI.
+        Task {
+            guard let handler = MockURLProtocol.handler else {
+                client?.urlProtocol(
+                    self,
+                    didFailWithError: NSError(
+                        domain: "MockURLProtocol",
+                        code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: "no handler set"]
+                    )
                 )
-            )
-            return
-        }
-        do {
-            let (response, data) = try handler(request)
-            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-            client?.urlProtocol(self, didLoad: data)
-            client?.urlProtocolDidFinishLoading(self)
-        } catch {
-            client?.urlProtocol(self, didFailWithError: error)
+                return
+            }
+            do {
+                let (response, data) = try handler(request)
+                client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocol(self, didLoad: data)
+                client?.urlProtocolDidFinishLoading(self)
+            } catch {
+                client?.urlProtocol(self, didFailWithError: error)
+            }
         }
     }
 
