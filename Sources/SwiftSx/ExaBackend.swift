@@ -444,7 +444,7 @@ public struct ExaBackend: SearchBackend {
         await client.disconnect()
 
         // Parse the tool result — try structuredContent first, then markdown links.
-        let results = parseMCPResult(structuredContent: result.structuredContent, content: result.content)
+        let results = try parseMCPResult(structuredContent: result.structuredContent, content: result.content)
 
         if options.numResults > 0, results.count > options.numResults {
             return Array(results.prefix(options.numResults))
@@ -546,21 +546,35 @@ public struct ExaBackend: SearchBackend {
     ///    re-encoded and decoded into ``ExaMCPStructuredContent``.
     /// 2. `content[]` text items — scan the concatenated text for Markdown links
     ///    `[title](url)` via `NSRegularExpression`.
-    private func parseMCPResult(structuredContent: Value?, content: [Tool.Content]) -> [SearchResult] {
-        if let structuredContent,
-           let structured = decodeStructuredContent(structuredContent),
-           let items = structured.results,
-           !items.isEmpty {
-            return items.map { item in
-                let resolvedContent = firstNonEmpty(item.text, item.content, item.summary, item.snippet)
-                return SearchResult(
-                    title:   item.title ?? "",
-                    url:     item.url   ?? "",
-                    content: resolvedContent,
-                    engine:  "exa",
-                    engines: ["exa"]
+    ///
+    /// - Throws: `BackendError(.invalidResponse, …)` when `structuredContent` is
+    ///   present but does not decode into the expected shape. Such a payload is
+    ///   malformed (the removed hand-rolled client also failed to decode it), and
+    ///   must surface as an error rather than silently falling through to the
+    ///   Markdown path and "succeeding" with no results — structured-only
+    ///   responses carry an empty `content`, so the fall-through would hide it.
+    private func parseMCPResult(structuredContent: Value?, content: [Tool.Content]) throws -> [SearchResult] {
+        if let structuredContent {
+            guard let structured = decodeStructuredContent(structuredContent) else {
+                throw BackendError(
+                    backend: "exa-mcp",
+                    code: .invalidResponse,
+                    message: "exa MCP returned a structuredContent payload that could not be parsed"
                 )
             }
+            if let items = structured.results, !items.isEmpty {
+                return items.map { item in
+                    let resolvedContent = firstNonEmpty(item.text, item.content, item.summary, item.snippet)
+                    return SearchResult(
+                        title:   item.title ?? "",
+                        url:     item.url   ?? "",
+                        content: resolvedContent,
+                        engine:  "exa",
+                        engines: ["exa"]
+                    )
+                }
+            }
+            // Decoded, but no usable results — fall through to the Markdown path.
         }
 
         // Fall back: scan text content items for Markdown links.

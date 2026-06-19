@@ -673,6 +673,22 @@ struct ExaMCPSearchTests {
         }
     }
 
+    @Test func mcpMalformedStructuredContentThrowsInvalidResponse() async throws {
+        // structuredContent is present but its `results` shape is wrong (a string,
+        // not an array). This must surface as .invalidResponse, not silently fall
+        // through to the (empty) Markdown path and "succeed" with no results.
+        let backend = makeBackend()
+        let resultJSON = Data(#"{"content":[],"structuredContent":{"results":"not-an-array"}}"#.utf8)
+        MockURLProtocol.handler = mcpHandler(toolCallResult: resultJSON)
+
+        do {
+            _ = try await backend.search(SearchOptions(query: "test"))
+            Issue.record("Expected a BackendError to be thrown")
+        } catch let error as BackendError {
+            #expect(error.code == .invalidResponse)
+        }
+    }
+
     // MARK: unmatched JSON-RPC error (id: null) must time out, not hang
     //
     // A JSON-RPC error response with `id: null` (valid JSON-RPC — e.g. plan/auth
