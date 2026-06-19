@@ -28,6 +28,7 @@ actor AsyncMutex {
 
     /// Release the lock, handing it to the next queued waiter if there is one.
     func unlock() {
+        precondition(isHeld, "AsyncMutex.unlock() called while not locked")
         if waiters.isEmpty {
             isHeld = false
         } else {
@@ -73,13 +74,17 @@ struct MockURLProtocolSerializedTrait: SuiteTrait, TestScoping {
         performing function: @Sendable () async throws -> Void
     ) async throws {
         await mockURLProtocolGate.lock()
+        // Capture the outcome, unlock exactly once, then rethrow. `defer` can't
+        // be used because `unlock()` is async.
+        let result: Result<Void, any Error>
         do {
             try await function()
+            result = .success(())
         } catch {
-            await mockURLProtocolGate.unlock()
-            throw error
+            result = .failure(error)
         }
         await mockURLProtocolGate.unlock()
+        try result.get()
     }
 }
 
