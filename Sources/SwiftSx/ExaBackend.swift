@@ -351,6 +351,15 @@ public struct ExaBackend: SearchBackend {
         // `HTTPTransport.send`). The SDK transport owns its own URLSession and
         // bypasses that gate, so authorize the endpoint here to preserve the
         // fail-closed sandbox semantics (a denial surfaces as `.refused`, exit 3).
+        //
+        // Caveat: this authorizes only the configured endpoint. Unlike
+        // `PageFetcher` (which installs a no-redirect delegate so every hop is
+        // re-authorized), the SDK builds its own URLSession from the
+        // `URLSessionConfiguration` below — which can't express a no-redirect
+        // policy — so a 3xx from this endpoint would be followed to another host
+        // without re-authorization. Low risk in practice (a single,
+        // user-configured endpoint that doesn't normally redirect); revisit if
+        // the SDK exposes a redirect/delegate hook.
         do {
             try await Shell.authorize(url)
         } catch is CancellationError {
