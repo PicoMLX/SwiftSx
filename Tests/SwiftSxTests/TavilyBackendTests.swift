@@ -320,7 +320,7 @@ private func tavilyItem(
 
 // MARK: - search: happy path + status codes
 
-@Suite(.serialized)
+@Suite(.serialized, .mockURLProtocolSerialized)
 struct TavilySearchTests {
 
     private func makeBackend(

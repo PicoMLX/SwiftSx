@@ -5,7 +5,7 @@ import FoundationNetworking   // HTTPURLResponse lives here on Linux
 import Testing
 @testable import SwiftSx
 
-@Suite(.serialized)
+@Suite(.serialized, .mockURLProtocolSerialized)
 struct TavilyAnswerTests {
 
     private func setHandler(status: Int, body: Data) {

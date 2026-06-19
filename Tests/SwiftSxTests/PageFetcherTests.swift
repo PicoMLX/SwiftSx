@@ -69,7 +69,7 @@ import Testing
 
 // MARK: - Fetch (mocked transport)
 
-@Suite(.serialized) struct PageFetcherFetchTests {
+@Suite(.serialized, .mockURLProtocolSerialized) struct PageFetcherFetchTests {
 
     private func mockFetcher() -> PageFetcher {
         PageFetcher(transport: HTTPTransport(session: MockURLProtocol.session()))

@@ -348,7 +348,7 @@ private func searxngJSON(results: [[String: String]] = []) -> Data {
 
 // MARK: - search: happy path + status codes
 
-@Suite(.serialized)
+@Suite(.serialized, .mockURLProtocolSerialized)
 struct SearxngSearchTests {
 
     private func makeBackend(
@@ -540,7 +540,7 @@ struct SearxngSearchTests {
 
 // MARK: - MultiSearxngBackend: ordered strategy
 
-@Suite(.serialized)
+@Suite(.serialized, .mockURLProtocolSerialized)
 struct MultiSearxngOrderedTests {
 
     @Test func firstAvailableInstanceSucceeds() async throws {
@@ -706,7 +706,7 @@ struct MultiSearxngOrderedTests {
 
 // MARK: - MultiSearxngBackend: parallel-fastest strategy
 
-@Suite(.serialized)
+@Suite(.serialized, .mockURLProtocolSerialized)
 struct MultiSearxngParallelFastestTests {
 
     @Test func parallelFastestReturnsFirstSuccess() async throws {

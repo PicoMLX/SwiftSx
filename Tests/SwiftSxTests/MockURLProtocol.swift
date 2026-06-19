@@ -52,7 +52,11 @@ struct UncheckedSendableBox<Wrapped>: @unchecked Sendable {
 /// ```
 ///
 /// **Important**: `MockURLProtocol.handler` is process-global. Any test suite
-/// that mutates it must be annotated `@Suite(.serialized)` to prevent races.
+/// that mutates it must be annotated `@Suite(.serialized, .mockURLProtocolSerialized)`:
+/// `.serialized` orders the suite's own tests, and `.mockURLProtocolSerialized`
+/// serializes it against every *other* handler-mutating suite (see
+/// `MockURLProtocolSerializedTrait`). Without the latter, two such suites can run
+/// in parallel and clobber each other's handler.
 final class MockURLProtocol: URLProtocol {
     typealias Handler = @Sendable (URLRequest) throws -> (HTTPURLResponse, Data)
 
